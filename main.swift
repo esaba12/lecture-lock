@@ -265,6 +265,40 @@ func mono(_ size: CGFloat, _ weight: Font.Weight = .regular) -> Font {
 
 let unlockPhrase = "i am choosing to stop learning"
 
+func durationText(_ m: Int) -> String {
+    m < 60 ? "\(m) MIN" : m % 60 == 0 ? "\(m / 60) HR" : "\(m / 60) HR \(m % 60) MIN"
+}
+
+/// Flat track, signal-orange fill, square thumb. 5–180 minutes in 5-minute steps.
+struct DurationSlider: View {
+    @Binding var minutes: Int
+    let range = 5...180
+    let step = 5
+
+    var body: some View {
+        GeometryReader { geo in
+            let thumb: CGFloat = 16
+            let span = geo.size.width - thumb
+            let frac = CGFloat(minutes - range.lowerBound) / CGFloat(range.upperBound - range.lowerBound)
+            ZStack(alignment: .leading) {
+                Rectangle().fill(Color.paper.opacity(0.15)).frame(height: 2)
+                Rectangle().fill(Color.signal).frame(width: thumb / 2 + span * frac, height: 2)
+                Rectangle().fill(Color.signal).frame(width: thumb, height: thumb)
+                    .offset(x: span * frac)
+                    .animation(.easeOut(duration: 0.08), value: minutes)
+            }
+            .frame(maxHeight: .infinity)
+            .contentShape(Rectangle())
+            .gesture(DragGesture(minimumDistance: 0).onChanged { g in
+                let f = min(max((g.location.x - thumb / 2) / span, 0), 1)
+                let raw = Double(range.lowerBound) + Double(f) * Double(range.upperBound - range.lowerBound)
+                minutes = Int((raw / Double(step)).rounded()) * step
+            })
+        }
+        .frame(height: 28)
+    }
+}
+
 struct ContentView: View {
     @ObservedObject var engine = LockEngine.shared
     @State private var phrase = ""
@@ -307,7 +341,13 @@ struct ContentView: View {
             Text("Browsers lock to the tab that's open right now.")
                 .font(mono(10)).foregroundColor(.dim).padding(.top, 6)
 
-            label("02 — DURATION").padding(.top, 22)
+            HStack(alignment: .firstTextBaseline) {
+                label("02 — DURATION")
+                Spacer()
+                Text(durationText(engine.minutes)).font(mono(15, .bold)).foregroundColor(.signal)
+            }
+            .padding(.top, 22)
+            DurationSlider(minutes: $engine.minutes).padding(.bottom, 12)
             HStack(spacing: 0) {
                 ForEach([30, 45, 60, 90, 120], id: \.self) { m in
                     Button { engine.minutes = m } label: {
@@ -319,7 +359,6 @@ struct ContentView: View {
                     }.buttonStyle(.plain)
                 }
             }
-            Text("minutes").font(mono(10)).foregroundColor(.dim).padding(.top, 6)
 
             Spacer()
             if !engine.status.isEmpty {
