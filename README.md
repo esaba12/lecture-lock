@@ -1,6 +1,6 @@
 # Lecture Lock
 
-A tiny macOS app: click **LOCK IN** and your Mac is locked to the lecture you're watching until the timer runs out.
+A tiny macOS app: click **LOCK IN** and your Mac is locked to the lecture you're watching until you're done: a timer runs out, the video ends, you finish the course, and more.
 
 - Every other app gets hidden the moment it's activated (Cmd-Tab, Dock, Spotlight — all bounce you back).
 - In a browser (Chrome, Safari, Arc, Brave, Edge) you're pinned to the lecture **tab**: switching tabs snaps back, closing it reopens it. YouTube locks to the exact video.
@@ -19,9 +19,17 @@ A tiny macOS app: click **LOCK IN** and your Mac is locked to the lecture you're
 - Video, link, course and text modes read the page with a little JavaScript. One-time setup: Chrome/Brave › View › Developer › *Allow JavaScript from Apple Events* (Safari: Develop › same option).
 - Emergency exit: type `i am choosing to stop learning`.
 
-## Build
+## Install
 
-Requires macOS 14+ and the Xcode command line tools.
+1. Download **LectureLock.zip** from the [latest release](https://github.com/esaba12/lecture-lock/releases/latest) and unzip it.
+2. Drag **LectureLock.app** into Applications.
+3. The app isn't notarized by Apple, so the first launch is blocked. Right-click it › **Open** › **Open**. If macOS still refuses, go to System Settings › Privacy & Security and click **Open Anyway**.
+
+Requires macOS 14 (Sonoma) or later.
+
+## Build from source
+
+Requires the Xcode command line tools (`xcode-select --install`).
 
 ```sh
 ./build.sh

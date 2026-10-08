@@ -4,7 +4,12 @@ cd "$(dirname "$0")"
 APP=LectureLock.app
 rm -rf $APP
 mkdir -p $APP/Contents/MacOS
-swiftc -O -parse-as-library main.swift -o $APP/Contents/MacOS/LectureLock
+# Universal binary: Apple Silicon + Intel.
+for arch in arm64 x86_64; do
+  swiftc -O -parse-as-library -target $arch-apple-macos14 main.swift -o /tmp/LectureLock-$arch
+done
+lipo -create /tmp/LectureLock-arm64 /tmp/LectureLock-x86_64 -output $APP/Contents/MacOS/LectureLock
+rm /tmp/LectureLock-arm64 /tmp/LectureLock-x86_64
 cat > $APP/Contents/Info.plist <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
