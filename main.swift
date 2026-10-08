@@ -383,7 +383,10 @@ final class LockEngine: ObservableObject {
 
     // MARK: Locking
 
-    func lock() {
+    /// Locks with the saved settings, or a one-off mode/duration (the menu bar's quick timers).
+    func lock(_ override: LockMode? = nil, minutes overrideMinutes: Int? = nil) {
+        let mode = override ?? self.mode
+        let minutes = overrideMinutes ?? self.minutes
         guard let pid = targetPID, let app = NSRunningApplication(processIdentifier: pid) else { return }
         let kind = BrowserKind.of(app)
         lastGoodURL = nil; lockedAnchor = nil; tabTitle = nil
@@ -403,7 +406,7 @@ final class LockEngine: ObservableObject {
             lastGoodURL = tab.url; tabTitle = tab.title
             lockedAnchor = mode.siteWide || scope == .site ? siteAnchor(tab.url) : pageAnchor(tab.url)
         }
-        if let kind, let anchor = lockedAnchor, let problem = prepare(kind, anchor: anchor, tabURL: tabURL) {
+        if let kind, let anchor = lockedAnchor, let problem = prepare(kind, anchor: anchor, tabURL: tabURL, mode: mode) {
             status = problem
             return
         }
@@ -434,7 +437,7 @@ final class LockEngine: ObservableObject {
     }
 
     /// Mode-specific checks before locking. Returns a message if locking shouldn't happen.
-    private func prepare(_ kind: BrowserKind, anchor: String, tabURL: String) -> String? {
+    private func prepare(_ kind: BrowserKind, anchor: String, tabURL: String, mode: LockMode) -> String? {
         func js(_ code: String) -> Result<String, LockError> {
             switch runInLectureTab(kind, anchor: anchor, js: code) {
             case .jsDisabled: .failure(LockError(enableJSHint(kind)))
@@ -489,6 +492,29 @@ final class LockEngine: ObservableObject {
                 if s == "1" { return "\"\(phrase)\" is already on this page. Pick text that only shows up when you're done." }
                 return nil
             }
+        }
+    }
+
+    /// From the menu bar: lock to whatever app you're using right now. Returns false if it couldn't.
+    @discardableResult
+    func lockFrontmost(_ override: LockMode? = nil, minutes: Int? = nil) -> Bool {
+        refresh()
+        if let front = NSWorkspace.shared.frontmostApplication, front != .current {
+            targetPID = front.processIdentifier
+        }
+        lock(override, minutes: minutes)
+        return locked
+    }
+
+    /// One line describing the saved settings, for the menu bar.
+    var settingsSummary: String {
+        switch mode {
+        case .timer: durationText(minutes).lowercased()
+        case .manual: "at least \(durationText(minutes).lowercased())"
+        case .video: "until the video ends"
+        case .link: "until I reach \(normalizeLink(goalLink).isEmpty ? "a link" : normalizeLink(goalLink))"
+        case .course: "until the course is done"
+        case .text: "until the page says \"\(goalText)\""
         }
     }
 
@@ -616,10 +642,10 @@ final class LockEngine: ObservableObject {
 
     private func updateMenuText() {
         switch lockedMode {
-        case .course: menuText = "◉ \(coursesDone)/\(courseRange.count)"
+        case .course: menuText = "\(coursesDone)/\(courseRange.count)"
         case .video where video?.paused == true: menuText = "❚❚ " + clock(clockSeconds)
-        case .manual where canSayDone: menuText = "◉ done?"
-        default: menuText = "◉ " + clock(clockSeconds)
+        case .manual where canSayDone: menuText = "done?"
+        default: menuText = clock(clockSeconds)
         }
     }
 
@@ -770,7 +796,7 @@ struct ContentView: View {
                 Text(engine.status).font(mono(10)).foregroundColor(.signal)
                     .fixedSize(horizontal: false, vertical: true).padding(.bottom, 10)
             }
-            Button(action: engine.lock) {
+            Button { engine.lock() } label: {
                 HStack {
                     Text("LOCK IN").font(mono(18, .heavy)).tracking(4)
                     Spacer()
@@ -877,7 +903,7 @@ struct ContentView: View {
                         .padding(.horizontal, 10).frame(height: 32)
                         .overlay(Rectangle().stroke(Color.paper.opacity(0.25), lineWidth: 1))
                     }
-                    setting("MENU BAR TIMER") {
+                    setting("MENU BAR ICON") {
                         HStack(spacing: 0) {
                             segment("ON", selected: engine.menuBar) { engine.menuBar = true }
                             segment("OFF", selected: !engine.menuBar) { engine.menuBar = false }
@@ -1027,6 +1053,46 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows: Bool) -> Bool { true }
 }
 
+/// The menu bar icon's menu.
+struct MenuBarMenu: View {
+    @ObservedObject var engine = LockEngine.shared
+    @Environment(\.openWindow) private var openWindow
+
+    var body: some View {
+        if engine.locked {
+            Text("Locked to \(engine.target?.localizedName ?? "—")")
+            Text(engine.lockedMode == .course
+                 ? "\(engine.coursesDone) of \(engine.courseRange.count) lessons done"
+                 : engine.lockedMode == .timer || engine.lockedMode == .video || engine.lockedMode == .manual
+                    ? "\(clock(engine.clockSeconds)) left"
+                    : "Locked in for \(clock(engine.clockSeconds))")
+            Divider()
+            Button("Show Lecture Lock…") { show() }
+        } else {
+            Button("Lock In · \(engine.settingsSummary)") { lock() }
+            Menu("Quick timer") {
+                ForEach([30, 60, 90], id: \.self) { m in
+                    Button("\(m) minutes") { lock(.timer, minutes: m) }
+                }
+            }
+            Text("Locks to the app you're using now")
+            Divider()
+            Button("Open Lecture Lock…") { show() }
+            Button("Quit") { NSApp.terminate(nil) }
+        }
+    }
+
+    func lock(_ mode: LockMode? = nil, minutes: Int? = nil) {
+        // If it can't lock (e.g. no video on the page), open the window so the reason is visible.
+        if !engine.lockFrontmost(mode, minutes: minutes) { show() }
+    }
+
+    func show() {
+        openWindow(id: "main")
+        NSApp.activate()
+    }
+}
+
 @main
 struct LectureLockApp: App {
     @NSApplicationDelegateAdaptor(AppDelegate.self) var delegate
@@ -1036,13 +1102,15 @@ struct LectureLockApp: App {
         Window("Lecture Lock", id: "main") { ContentView() }
             .windowResizability(.contentSize)
             .windowStyle(.hiddenTitleBar)
-        MenuBarExtra(isInserted: Binding(get: { engine.locked && engine.menuBar }, set: { _ in })) {
-            Button("Show Lecture Lock") {
-                NSApp.activate()
-                NSApp.windows.first { $0.canBecomeMain }?.makeKeyAndOrderFront(nil)
-            }
+        MenuBarExtra(isInserted: $engine.menuBar) {
+            MenuBarMenu()
         } label: {
-            Text(engine.menuText).monospacedDigit()
+            if engine.locked {
+                Image(systemName: "lock.fill")
+                Text(engine.menuText).monospacedDigit()
+            } else {
+                Image(systemName: "lock.open")
+            }
         }
     }
 }

@@ -15,8 +15,8 @@ A tiny macOS app: click **LOCK IN** and your Mac is locked to the lecture you're
     - **I say I'm done** — an *I'm done* button appears after a minimum time.
   - **Stay on** — this page or the whole site (link/course/text modes always use the whole site, so you can move between pages).
   - **Also allow** — let a notes app (Notes, Notion, GoodNotes…) through alongside the lecture.
-  - **Menu bar timer** — time left / lessons done shows in the menu bar while locked.
 - Video, link, course and text modes read the page with a little JavaScript. One-time setup: Chrome/Brave › View › Developer › *Allow JavaScript from Apple Events* (Safari: Develop › same option).
+- **Menu bar icon** — 🔓 sits in the menu bar; click it to lock to whatever app you're using (saved settings, or a quick 30/60/90-min timer). While locked it shows 🔒 with the time left or lessons done. Can be turned off under Advanced.
 - Emergency exit: type `i am choosing to stop learning`.
 
 ## Install
