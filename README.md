@@ -6,9 +6,17 @@ A tiny macOS app: click **LOCK IN** and your Mac is locked to the lecture you're
 - In a browser (Chrome, Safari, Arc, Brave, Edge) you're pinned to the lecture **tab**: switching tabs snaps back, closing it reopens it. YouTube locks to the exact video.
 - Quit the browser and it relaunches on the lecture. LectureLock itself ignores Cmd-Q while locked.
 - **Advanced** (collapsed by default):
-  - **Unlock when video ends** — reads the page's video (current time, length, speed) and unlocks when it's finished. Skipping ahead snaps back to the furthest point you've watched; 2× speed is fine; YouTube ads are ignored. One-time setup: Chrome/Brave › View › Developer › *Allow JavaScript from Apple Events* (Safari: Develop › same option).
+  - **Unlock when…**
+    - **Timer ends** (default) — 5–180 min slider.
+    - **Video ends** — unlocks when the page's video finishes. Skipping ahead snaps back to the furthest point watched; speed-ups are fine; YouTube ads are ignored.
+    - **I reach a link** — e.g. `sqlbolt.com/lesson/end`. Only counts if you click your way there (typed URLs have no referrer).
+    - **I finish a course** — built-in SQLBolt support: pick a goal lesson; each lesson counts once all its exercises are solved, starting from the lesson you're on.
+    - **Page shows text** — e.g. `Accepted`, `Submitted`, `Congratulations`.
+    - **I say I'm done** — an *I'm done* button appears after a minimum time.
+  - **Stay on** — this page or the whole site (link/course/text modes always use the whole site, so you can move between pages).
   - **Also allow** — let a notes app (Notes, Notion, GoodNotes…) through alongside the lecture.
-  - **Menu bar timer** — time left shows in the menu bar while locked.
+  - **Menu bar timer** — time left / lessons done shows in the menu bar while locked.
+- Video, link, course and text modes read the page with a little JavaScript. One-time setup: Chrome/Brave › View › Developer › *Allow JavaScript from Apple Events* (Safari: Develop › same option).
 - Emergency exit: type `i am choosing to stop learning`.
 
 ## Build
