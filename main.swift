@@ -207,7 +207,6 @@ let sep = "|~|"
 /// Picks the longest video on the page (skips previews/thumbnails).
 private let pickVideo = "var vs=[].slice.call(document.querySelectorAll('video')).filter(function(v){return isFinite(v.duration)&&v.duration>0});vs.sort(function(a,b){return b.duration-a.duration});var v=vs[0];"
 let probeVideoJS = "(function(){if(document.querySelector('.ad-showing'))return 'ad';\(pickVideo)if(!v)return 'none';return [v.currentTime,v.duration,v.paused?1:0,v.playbackRate].join(',')})()"
-func seekVideoJS(_ t: Double) -> String { "(function(){\(pickVideo)if(v)v.currentTime=\(t);return 'ok'})()" }
 
 /// URL plus referrer: an empty referrer means the page was typed in, not clicked to.
 let locationJS = "(function(){return location.href+'\(sep)'+document.referrer})()"
@@ -331,7 +330,6 @@ final class LockEngine: ObservableObject {
     private var observer: NSObjectProtocol?
     private var timer: Timer?
     private var ticks = 0
-    private var lastPoll = Date()
     private var relaunching = false
 
     init() {
@@ -458,7 +456,7 @@ final class LockEngine: ObservableObject {
                         ? "An ad is playing. Lock in once the lecture starts."
                         : "No video found on this tab. If it's embedded (e.g. Panopto inside Canvas), open the video directly, or use the timer."
                 }
-                video = v; maxWatched = v.current; lastPoll = Date()
+                video = v; maxWatched = v.current
                 return nil
             }
 
@@ -580,18 +578,10 @@ final class LockEngine: ObservableObject {
         return s
     }
 
-    /// Tracks real watch progress; snaps back skips; unlocks once the end has actually been reached.
+    /// Tracks the furthest point reached; unlocks once the end has been reached.
     private func pollVideo() {
-        guard let s = inTab(probeVideoJS), var v = parseVideo(s) else { return }  // ad, loading, or reopening
-        let now = Date()
-        let slack = now.timeIntervalSince(lastPoll) * max(v.rate, 1) + 3
-        lastPoll = now
-        if v.current > maxWatched + slack {
-            _ = inTab(seekVideoJS(maxWatched))
-            v.current = maxWatched
-        } else {
-            maxWatched = max(maxWatched, v.current)
-        }
+        guard let s = inTab(probeVideoJS), let v = parseVideo(s) else { return }  // ad, loading, or reopening
+        maxWatched = max(maxWatched, v.current)
         video = v
         if maxWatched >= v.duration - 2 { finish("Lecture finished. Nice work.") }
     }
@@ -826,7 +816,7 @@ struct ContentView: View {
 
         case .video:
             header("02 — UNTIL", "VIDEO ENDS")
-            hint("Unlocks when the video finishes. Skipping ahead snaps back; playback speed is fine.")
+            hint("Unlocks when the video finishes.")
 
         case .link:
             header("02 — UNTIL I REACH", "A LINK")
@@ -1102,7 +1092,8 @@ struct LectureLockApp: App {
         Window("Lecture Lock", id: "main") { ContentView() }
             .windowResizability(.contentSize)
             .windowStyle(.hiddenTitleBar)
-        MenuBarExtra(isInserted: $engine.menuBar) {
+        // SwiftUI writes this back on every update; skipping no-op writes stops a redraw loop that pins the CPU.
+        MenuBarExtra(isInserted: Binding(get: { engine.menuBar }, set: { if engine.menuBar != $0 { engine.menuBar = $0 } })) {
             MenuBarMenu()
         } label: {
             if engine.locked {
