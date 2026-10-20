@@ -1,5 +1,6 @@
 import SwiftUI
 import AppKit
+import UniformTypeIdentifiers
 
 // MARK: - Browser control (AppleScript)
 
@@ -333,6 +334,9 @@ final class LockEngine: ObservableObject {
     private var relaunching = false
 
     init() {
+        // Start the menu bar icon at the far right, where it's last to be hidden behind the notch.
+        // ⌘-dragging it saves a new position over this.
+        defaults.register(defaults: ["NSStatusItem Preferred Position Item-0": 1])
         mode = LockMode(rawValue: defaults.string(forKey: "mode") ?? "") ?? .timer
         scope = LockScope(rawValue: defaults.string(forKey: "scope") ?? "") ?? .page
         allowed = Set(defaults.stringArray(forKey: "allowed") ?? [])
@@ -373,6 +377,24 @@ final class LockEngine: ObservableObject {
                apps.contains(where: { $0.processIdentifier == pid }) { return pid }
         }
         return nil
+    }
+
+    /// Display name for an allowed app, whether or not it's running.
+    func appName(_ id: String) -> String {
+        if let name = apps.first(where: { $0.bundleIdentifier == id })?.localizedName { return name }
+        return NSWorkspace.shared.urlForApplication(withBundleIdentifier: id)?.deletingPathExtension().lastPathComponent ?? id
+    }
+
+    /// Pick allowed apps from disk, so ones that aren't open yet can be added too.
+    func pickAllowedApps() {
+        let panel = NSOpenPanel()
+        panel.allowedContentTypes = [.application]
+        panel.allowsMultipleSelection = true
+        panel.directoryURL = URL(fileURLWithPath: "/Applications")
+        guard panel.runModal() == .OK else { return }
+        for url in panel.urls {
+            if let id = Bundle(url: url)?.bundleIdentifier { allowed.insert(id) }
+        }
     }
 
     private func isAllowed(_ app: NSRunningApplication) -> Bool {
@@ -878,20 +900,30 @@ struct ContentView: View {
                         }
                     }
                     setting("ALSO ALLOW") {
-                        Menu {
-                            ForEach(engine.apps.filter { $0.processIdentifier != engine.targetPID }, id: \.processIdentifier) { app in
-                                let id = app.bundleIdentifier ?? ""
-                                Toggle(app.localizedName ?? id, isOn: Binding(
-                                    get: { engine.allowed.contains(id) },
-                                    set: { on in if on { engine.allowed.insert(id) } else { engine.allowed.remove(id) } }
-                                ))
+                        VStack(alignment: .leading, spacing: 4) {
+                            ForEach(engine.allowed.sorted { engine.appName($0) < engine.appName($1) }, id: \.self) { id in
+                                HStack {
+                                    Text(engine.appName(id)).font(mono(12)).foregroundColor(.paper)
+                                    Spacer()
+                                    Button { engine.allowed.remove(id) } label: { Text("×").font(mono(14, .bold)) }
+                                        .buttonStyle(.plain).foregroundColor(.dim)
+                                }
+                                .padding(.horizontal, 10).frame(height: 28)
+                                .overlay(Rectangle().stroke(Color.paper.opacity(0.25), lineWidth: 1))
                             }
-                        } label: {
-                            Text(allowedSummary).font(mono(12))
+                            Menu {
+                                ForEach(engine.apps.filter { $0.processIdentifier != engine.targetPID && !engine.allowed.contains($0.bundleIdentifier ?? "") }, id: \.processIdentifier) { app in
+                                    Button(app.localizedName ?? "?") { if let id = app.bundleIdentifier { engine.allowed.insert(id) } }
+                                }
+                                Divider()
+                                Button("Other app…") { engine.pickAllowedApps() }
+                            } label: {
+                                Text(engine.allowed.isEmpty ? "+ ADD APP (e.g. a notes app)" : "+ ADD APP").font(mono(12, .bold))
+                            }
+                            .menuStyle(.borderlessButton)
+                            .padding(.horizontal, 10).frame(height: 28)
+                            .overlay(Rectangle().stroke(Color.paper.opacity(0.25), lineWidth: 1))
                         }
-                        .menuStyle(.borderlessButton)
-                        .padding(.horizontal, 10).frame(height: 32)
-                        .overlay(Rectangle().stroke(Color.paper.opacity(0.25), lineWidth: 1))
                     }
                     setting("MENU BAR ICON") {
                         HStack(spacing: 0) {
@@ -905,11 +937,6 @@ struct ContentView: View {
                 .transition(.opacity)
             }
         }
-    }
-
-    var allowedSummary: String {
-        let names = engine.apps.filter { engine.allowed.contains($0.bundleIdentifier ?? "") }.compactMap(\.localizedName)
-        return names.isEmpty ? "Nothing else (e.g. pick a notes app)" : names.joined(separator: ", ")
     }
 
     // MARK: Locked screen
@@ -1096,8 +1123,8 @@ struct LectureLockApp: App {
         MenuBarExtra(isInserted: Binding(get: { engine.menuBar }, set: { if engine.menuBar != $0 { engine.menuBar = $0 } })) {
             MenuBarMenu()
         } label: {
+            // Just the countdown while locked: a full menu bar hides the widest items first.
             if engine.locked {
-                Image(systemName: "lock.fill")
                 Text(engine.menuText).monospacedDigit()
             } else {
                 Image(systemName: "lock.open")
