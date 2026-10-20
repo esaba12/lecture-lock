@@ -323,6 +323,7 @@ final class LockEngine: ObservableObject {
     @Published var scope: LockScope { didSet { defaults.set(scope.rawValue, forKey: "scope") } }
     @Published var allowed: Set<String> { didSet { defaults.set(Array(allowed), forKey: "allowed") } }
     @Published var menuBar: Bool { didSet { defaults.set(menuBar, forKey: "menuBar") } }
+    @Published var sound: Bool { didSet { defaults.set(sound, forKey: "sound") } }
     @Published var goalLink: String { didSet { defaults.set(goalLink, forKey: "goalLink") } }
     @Published var goalText: String { didSet { defaults.set(goalText, forKey: "goalText") } }
     @Published var courseGoal: [String: Int] { didSet { defaults.set(courseGoal, forKey: "courseGoal") } }
@@ -344,6 +345,7 @@ final class LockEngine: ObservableObject {
         scope = LockScope(rawValue: defaults.string(forKey: "scope") ?? "") ?? .page
         allowed = Set(defaults.stringArray(forKey: "allowed") ?? [])
         menuBar = defaults.object(forKey: "menuBar") as? Bool ?? true
+        sound = defaults.object(forKey: "sound") as? Bool ?? true
         goalLink = defaults.string(forKey: "goalLink") ?? ""
         goalText = defaults.string(forKey: "goalText") ?? ""
         courseGoal = defaults.dictionary(forKey: "courseGoal") as? [String: Int] ?? [:]
@@ -552,7 +554,7 @@ final class LockEngine: ObservableObject {
     func finish(_ message: String) {
         unlock()
         status = message
-        NSSound(named: "Glass")?.play()
+        if sound { NSSound(named: "Glass")?.play() }
         NSApp.activate()
     }
 
@@ -928,12 +930,21 @@ struct ContentView: View {
                             .overlay(Rectangle().stroke(Color.paper.opacity(0.25), lineWidth: 1))
                         }
                     }
-                    setting("MENU BAR ICON") {
-                        HStack(spacing: 0) {
-                            segment("ON", selected: engine.menuBar) { engine.menuBar = true }
-                            segment("OFF", selected: !engine.menuBar) { engine.menuBar = false }
+                    HStack(alignment: .top, spacing: 24) {
+                        setting("MENU BAR ICON") {
+                            HStack(spacing: 0) {
+                                segment("ON", selected: engine.menuBar) { engine.menuBar = true }
+                                segment("OFF", selected: !engine.menuBar) { engine.menuBar = false }
+                            }
+                            .frame(width: 140)
                         }
-                        .frame(width: 140)
+                        setting("FINISH SOUND") {
+                            HStack(spacing: 0) {
+                                segment("ON", selected: engine.sound) { engine.sound = true }
+                                segment("OFF", selected: !engine.sound) { engine.sound = false }
+                            }
+                            .frame(width: 140)
+                        }
                     }
                 }
                 .padding(.top, 4)
