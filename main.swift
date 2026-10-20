@@ -292,6 +292,9 @@ enum LockMode: String, CaseIterable, Identifiable {
 
 enum LockScope: String { case page, site }
 
+/// Always allowed, so files and the desktop stay reachable.
+let finderID = "com.apple.finder"
+
 final class LockEngine: ObservableObject {
     static let shared = LockEngine()
     private let defaults = UserDefaults.standard
@@ -398,7 +401,7 @@ final class LockEngine: ObservableObject {
     }
 
     private func isAllowed(_ app: NSRunningApplication) -> Bool {
-        app == target || app == .current || allowed.contains(app.bundleIdentifier ?? "")
+        app == target || app == .current || app.bundleIdentifier == finderID || allowed.contains(app.bundleIdentifier ?? "")
     }
 
     // MARK: Locking
@@ -912,7 +915,7 @@ struct ContentView: View {
                                 .overlay(Rectangle().stroke(Color.paper.opacity(0.25), lineWidth: 1))
                             }
                             Menu {
-                                ForEach(engine.apps.filter { $0.processIdentifier != engine.targetPID && !engine.allowed.contains($0.bundleIdentifier ?? "") }, id: \.processIdentifier) { app in
+                                ForEach(engine.apps.filter { $0.processIdentifier != engine.targetPID && $0.bundleIdentifier != finderID && !engine.allowed.contains($0.bundleIdentifier ?? "") }, id: \.processIdentifier) { app in
                                     Button(app.localizedName ?? "?") { if let id = app.bundleIdentifier { engine.allowed.insert(id) } }
                                 }
                                 Divider()
