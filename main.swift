@@ -2,6 +2,7 @@ import SwiftUI
 import AppKit
 import UniformTypeIdentifiers
 import UserNotifications
+import ServiceManagement
 
 // MARK: - Browser control (AppleScript)
 
@@ -544,6 +545,18 @@ final class LockEngine: ObservableObject {
         }
     }
 
+    /// Open at login, read live from the system so it stays right if changed in System Settings.
+    var loginStatus: SMAppService.Status { SMAppService.mainApp.status }
+
+    func setOpenAtLogin(_ on: Bool) {
+        do {
+            if on { try SMAppService.mainApp.register() } else { try SMAppService.mainApp.unregister() }
+        } catch {
+            status = "Couldn't change Open at login: \(error.localizedDescription)"
+        }
+        objectWillChange.send()
+    }
+
     func unlock() {
         locked = false
         session += 1
@@ -1001,6 +1014,17 @@ struct ContentView: View {
                                 segment("OFF", selected: !engine.notify) { engine.notify = false }
                             }
                             .frame(width: 140)
+                        }
+                        setting("OPEN AT LOGIN") {
+                            let on = engine.loginStatus == .enabled || engine.loginStatus == .requiresApproval
+                            HStack(spacing: 0) {
+                                segment("ON", selected: on) { engine.setOpenAtLogin(true) }
+                                segment("OFF", selected: !on) { engine.setOpenAtLogin(false) }
+                            }
+                            .frame(width: 140)
+                            if engine.loginStatus == .requiresApproval {
+                                hint("Approve in System Settings › General › Login Items.").frame(width: 140, alignment: .leading)
+                            }
                         }
                     }
                 }
