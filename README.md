@@ -20,6 +20,7 @@ A tiny macOS app: click **LOCK IN** and your Mac is locked to the lecture you're
 - **Finish sound** — the chime when you unlock. Can be turned off under Advanced.
 - **Notifications** — a heads-up at 5 minutes left (timer and video), and when manual mode's minimum time is up. When the lock ends the window comes back even if you'd closed it. Can be turned off under Advanced.
 - **Open at login** — starts LectureLock (in the menu bar) when you log in. Off by default; under Advanced.
+- **History** — the setup screen shows time locked in today and this week, your streak (days in a row with a finished session) and how often you used the emergency exit this week.
 - **Emergency exit** — type `i am choosing to stop learning`. It has to be typed; pasting is blocked. Set it to *After 15 min* under Advanced to keep it closed for the first 15 minutes of every lock.
 
 ## Install
