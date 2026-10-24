@@ -53,7 +53,13 @@ func jsString(_ s: String) -> String {
 
 func currentTab(_ kind: BrowserKind) -> (url: String, title: String)? {
     let title = if case .safari = kind { "name" } else { "title" }
-    let src = "tell application \"\(kind.appName)\" to return {URL of \(kind.frontTab), \(title) of \(kind.frontTab)}"
+    let src = """
+    tell application "\(kind.appName)"
+      with timeout of 5 seconds
+        return {URL of \(kind.frontTab), \(title) of \(kind.frontTab)}
+      end timeout
+    end tell
+    """
     guard let d = runScript(src), d.numberOfItems == 2,
           let url = d.atIndex(1)?.stringValue else { return nil }
     return (url, d.atIndex(2)?.stringValue ?? url)
@@ -88,6 +94,7 @@ func tabSearchScript(_ kind: BrowserKind, anchor: String, before: String = "", o
     let a = esc(anchor)
     return """
     tell application "\(kind.appName)"
+      with timeout of 5 seconds
       \(before)
       if (count of windows) > 0 then
         set t to \(kind.frontTab)
@@ -111,6 +118,7 @@ func tabSearchScript(_ kind: BrowserKind, anchor: String, before: String = "", o
         end repeat
       end repeat
       \(otherwise)
+      end timeout
     end tell
     """
 }
@@ -302,6 +310,13 @@ final class LockEngine: ObservableObject {
     private var ticks = 0
     private var relaunching = false
 
+    /// All AppleScript runs here, one call at a time, so a hung browser can't freeze the UI.
+    private let scriptQueue = DispatchQueue(label: "lecturelock.applescript")
+    /// A tick's browser work is still running; later ticks skip theirs instead of queueing up.
+    private var scriptBusy = false
+    /// Bumped on lock and unlock so results from an earlier session are ignored.
+    private var session = 0
+
     init() {
         // Start the menu bar icon at the far right, where it's last to be hidden behind the notch.
         // ⌘-dragging it saves a new position over this.
@@ -333,7 +348,13 @@ final class LockEngine: ObservableObject {
     func peekTab() {
         guard let pid = targetPID, let app = NSRunningApplication(processIdentifier: pid),
               let kind = BrowserKind.of(app) else { idleTabURL = nil; return }
-        idleTabURL = currentTab(kind)?.url
+        scriptQueue.async { [weak self] in
+            let url = currentTab(kind)?.url
+            DispatchQueue.main.async {
+                guard let self, self.targetPID == pid else { return }
+                self.idleTabURL = url
+            }
+        }
     }
 
     var idleCourse: Course? { idleTabURL.flatMap(course(forURL:)) }
@@ -381,6 +402,7 @@ final class LockEngine: ObservableObject {
         let minutes = overrideMinutes ?? self.minutes
         guard let pid = targetPID, let app = NSRunningApplication(processIdentifier: pid) else { return }
         let kind = BrowserKind.of(app)
+        session += 1
         lastGoodURL = nil; lockedAnchor = nil; tabTitle = nil
         video = nil; maxWatched = 0; lockedCourse = nil; completed = []; typedLinkWarning = false
 
@@ -390,7 +412,7 @@ final class LockEngine: ObservableObject {
         }
         var tabURL = ""
         if let kind {
-            guard let tab = currentTab(kind) else {
+            guard let tab = scriptQueue.sync(execute: { currentTab(kind) }) else {
                 status = "Couldn't read the browser tab. Allow LectureLock under System Settings › Privacy & Security › Automation, then try again."
                 return
             }
@@ -431,7 +453,7 @@ final class LockEngine: ObservableObject {
     /// Mode-specific checks before locking. Returns a message if locking shouldn't happen.
     private func prepare(_ kind: BrowserKind, anchor: String, tabURL: String, mode: LockMode) -> String? {
         func js(_ code: String) -> Result<String, LockError> {
-            switch runInLectureTab(kind, anchor: anchor, js: code) {
+            switch scriptQueue.sync(execute: { runInLectureTab(kind, anchor: anchor, js: code) }) {
             case .jsDisabled: .failure(LockError(enableJSHint(kind)))
             case .failed: .failure(LockError("Couldn't talk to the browser. Try again."))
             case .value(let s): .success(s)
@@ -512,6 +534,7 @@ final class LockEngine: ObservableObject {
 
     func unlock() {
         locked = false
+        session += 1
         timer?.invalidate(); timer = nil
         if let observer { NSWorkspace.shared.notificationCenter.removeObserver(observer) }
         observer = nil
@@ -550,38 +573,63 @@ final class LockEngine: ObservableObject {
 
         let front = NSWorkspace.shared.frontmostApplication
         if let front { handleActivation(front) }
-        if front == target, let kind = BrowserKind.of(target), let url = lastGoodURL, let a = lockedAnchor,
-           let cur = enforceTab(kind, url: url, anchor: a) {
-            lastGoodURL = cur   // so a closed tab reopens where you were, not where you started
-        }
-        if ticks % 2 == 0 {
-            switch lockedMode {
-            case .video: pollVideo()
-            case .link: pollLink()
-            case .course: pollCourse()
-            case .text: pollText()
-            case .timer, .manual: break
-            }
+        if !scriptBusy, let kind = BrowserKind.of(target), let a = lockedAnchor {
+            browserWork(kind, anchor: a, enforceURL: front == target ? lastGoodURL : nil,
+                        pollJS: ticks % 2 == 0 ? pollJS() : nil)
         }
         updateMenuText()
     }
 
-    private func inTab(_ code: String) -> String? {
-        guard let target, let kind = BrowserKind.of(target), let a = lockedAnchor,
-              case .value(let s) = runInLectureTab(kind, anchor: a, js: code), s != "notab" else { return nil }
-        return s
+    /// The page check for the current mode, if it has one.
+    private func pollJS() -> String? {
+        switch lockedMode {
+        case .video: probeVideoJS
+        case .link: locationJS
+        case .course: lockedCourse?.doneJS
+        case .text: pageHasTextJS(goalText.trimmingCharacters(in: .whitespacesAndNewlines))
+        case .timer, .manual: nil
+        }
+    }
+
+    /// Runs tab enforcement and the mode's page check on the script queue, then applies the results on main.
+    private func browserWork(_ kind: BrowserKind, anchor: String, enforceURL: String?, pollJS: String?) {
+        guard enforceURL != nil || pollJS != nil else { return }
+        let token = session, mode = lockedMode
+        scriptBusy = true
+        scriptQueue.async { [weak self] in
+            let cur = enforceURL.flatMap { enforceTab(kind, url: $0, anchor: anchor) }
+            var result: String?
+            if let pollJS, case .value(let s) = runInLectureTab(kind, anchor: anchor, js: pollJS), s != "notab" {
+                result = s
+            }
+            DispatchQueue.main.async {
+                guard let self else { return }
+                self.scriptBusy = false
+                guard self.locked, token == self.session else { return }
+                if let cur { self.lastGoodURL = cur }   // so a closed tab reopens where you were, not where you started
+                if let result {
+                    switch mode {
+                    case .video: self.pollVideo(result)
+                    case .link: self.pollLink(result)
+                    case .course: self.pollCourse(result)
+                    case .text: self.pollText(result)
+                    case .timer, .manual: break
+                    }
+                }
+                if self.locked { self.updateMenuText() }
+            }
+        }
     }
 
     /// Tracks the furthest point reached; unlocks once the end has been reached.
-    private func pollVideo() {
-        guard let s = inTab(probeVideoJS), let v = parseVideo(s) else { return }  // ad, loading, or reopening
+    private func pollVideo(_ s: String) {
+        guard let v = parseVideo(s) else { return }  // ad, loading, or reopening
         maxWatched = max(maxWatched, v.current)
         video = v
         if maxWatched >= v.duration - 2 { finish("Lecture finished. Nice work.") }
     }
 
-    private func pollLink() {
-        guard let s = inTab(locationJS) else { return }
+    private func pollLink(_ s: String) {
         let parts = s.components(separatedBy: sep)
         guard normalizeLink(parts[0]).contains(normalizeLink(goalLink)) else { typedLinkWarning = false; return }
         if parts.count > 1, !parts[1].isEmpty {
@@ -591,15 +639,15 @@ final class LockEngine: ObservableObject {
         }
     }
 
-    private func pollCourse() {
-        guard let c = lockedCourse, let s = inTab(c.doneJS) else { return }
+    private func pollCourse(_ s: String) {
+        guard let c = lockedCourse else { return }
         let parts = s.components(separatedBy: sep)
         if parts.count == 2, parts[1] == "1", let i = c.index(ofPath: parts[0]) { completed.insert(i) }
         if courseRange.allSatisfy(completed.contains) { finish("Course done. Nice work.") }
     }
 
-    private func pollText() {
-        if inTab(pageHasTextJS(goalText.trimmingCharacters(in: .whitespacesAndNewlines))) == "1" {
+    private func pollText(_ s: String) {
+        if s == "1" {
             finish("Done. Nice work.")
         }
     }
