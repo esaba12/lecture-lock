@@ -270,6 +270,29 @@ enum LockScope: String { case page, site }
 /// Always allowed, so files and the desktop stay reachable.
 let finderID = "com.apple.finder"
 
+/// The running lock, saved so it comes back after Force Quit or a restart.
+struct LockSnapshot: Codable {
+    static let key = "activeLock"
+    var bundleID: String
+    var bundleURL: URL?
+    var mode: String
+    var anchor: String?
+    var lastGoodURL: String?
+    var tabTitle: String?
+    var lockedAt: Date
+    var endsAt: Date
+    var goalLink: String
+    var goalText: String
+    var course: String?
+    var courseStart: Int
+    var courseEnd: Int
+    var completed: [Int]
+    var maxWatched: Double
+
+    /// A timer that ran out while LectureLock wasn't running.
+    var isOver: Bool { mode == LockMode.timer.rawValue && Date() >= endsAt }
+}
+
 final class LockEngine: ObservableObject {
     static let shared = LockEngine()
     private let defaults = UserDefaults.standard
@@ -321,6 +344,7 @@ final class LockEngine: ObservableObject {
     private var scriptBusy = false
     /// Bumped on lock and unlock so results from an earlier session are ignored.
     private var session = 0
+    private var lastSnapshot: Data?
 
     init() {
         // Start the menu bar icon at the far right, where it's last to be hidden behind the notch.
@@ -436,8 +460,6 @@ final class LockEngine: ObservableObject {
         status = ""
         lockedAt = Date()
         endsAt = mode == .timer || mode == .manual ? Date().addingTimeInterval(Double(minutes) * 60) : .distantFuture
-        locked = true
-        ticks = 0
         warnAtFive = switch mode {
         case .timer: minutes > 5
         case .video: video.map { ($0.duration - $0.current) / $0.rate > 300 } ?? false
@@ -445,6 +467,13 @@ final class LockEngine: ObservableObject {
         }
         warnCanFinish = mode == .manual
         if notify { UNUserNotificationCenter.current().requestAuthorization(options: [.alert]) { _, _ in } }
+        arm()
+    }
+
+    /// Hides everything else and starts enforcing. Shared by LOCK IN and restoring a saved lock.
+    private func arm() {
+        locked = true
+        ticks = 0
         updateMenuText()
 
         for other in NSWorkspace.shared.runningApplications
@@ -461,6 +490,66 @@ final class LockEngine: ObservableObject {
             self?.handleActivation(a)
         }
         timer = Timer.scheduledTimer(withTimeInterval: 1, repeats: true) { [weak self] _ in self?.tick() }
+        saveSnapshot()
+        startWatchdog()
+    }
+
+    private func saveSnapshot() {
+        guard locked, let target, let id = target.bundleIdentifier else { return }
+        let snap = LockSnapshot(
+            bundleID: id, bundleURL: target.bundleURL, mode: lockedMode.rawValue, anchor: lockedAnchor,
+            lastGoodURL: lastGoodURL, tabTitle: tabTitle, lockedAt: lockedAt, endsAt: endsAt,
+            goalLink: goalLink, goalText: goalText, course: lockedCourse?.name,
+            courseStart: courseRange.lowerBound, courseEnd: courseRange.upperBound,
+            completed: completed.sorted(), maxWatched: maxWatched)
+        guard let data = try? JSONEncoder().encode(snap), data != lastSnapshot else { return }
+        lastSnapshot = data
+        defaults.set(data, forKey: LockSnapshot.key)
+    }
+
+    private func clearSnapshot() {
+        lastSnapshot = nil
+        defaults.removeObject(forKey: LockSnapshot.key)
+    }
+
+    /// At launch: pick a lock back up after Force Quit or a restart, reopening the app if it's gone.
+    func restore() {
+        guard !locked, let data = defaults.data(forKey: LockSnapshot.key) else { return }
+        guard let s = try? JSONDecoder().decode(LockSnapshot.self, from: data),
+              let mode = LockMode(rawValue: s.mode), !s.isOver else { clearSnapshot(); return }
+        lockedMode = mode; lockedAnchor = s.anchor; lastGoodURL = s.lastGoodURL; tabTitle = s.tabTitle
+        lockedAt = s.lockedAt; endsAt = s.endsAt
+        goalLink = s.goalLink; goalText = s.goalText
+        lockedCourse = courses.first { $0.name == s.course }
+        courseRange = s.courseStart...max(s.courseStart, s.courseEnd); completed = Set(s.completed)
+        video = nil; maxWatched = s.maxWatched; typedLinkWarning = false; status = ""
+
+        if let app = NSRunningApplication.runningApplications(withBundleIdentifier: s.bundleID).first(where: { !$0.isTerminated }) {
+            target = app
+            arm()
+        } else if let appURL = s.bundleURL ?? NSWorkspace.shared.urlForApplication(withBundleIdentifier: s.bundleID) {
+            launch(appURL) { app in
+                guard !self.locked else { return }
+                guard let app else { self.clearSnapshot(); return }
+                self.target = app
+                self.arm()
+            }
+        } else {
+            clearSnapshot()
+        }
+    }
+
+    /// Runs this same executable as `--watchdog`, which reopens LectureLock if it's killed mid-lock.
+    /// It's a separate process, so it outlives a Force Quit, and exits by itself once the lock is cleared.
+    private func startWatchdog() {
+        guard let exe = Bundle.main.executableURL else { return }
+        let p = Process()
+        p.executableURL = exe
+        p.arguments = ["--watchdog", String(getpid())]
+        p.standardInput = FileHandle.nullDevice
+        p.standardOutput = FileHandle.nullDevice
+        p.standardError = FileHandle.nullDevice
+        try? p.run()
     }
 
     /// Mode-specific checks before locking. Returns a message if locking shouldn't happen.
@@ -560,6 +649,7 @@ final class LockEngine: ObservableObject {
     func unlock() {
         locked = false
         session += 1
+        clearSnapshot()
         timer?.invalidate(); timer = nil
         if let observer { NSWorkspace.shared.notificationCenter.removeObserver(observer) }
         observer = nil
@@ -623,6 +713,7 @@ final class LockEngine: ObservableObject {
                         pollJS: ticks % 2 == 0 ? pollJS() : nil)
         }
         checkWarnings()
+        if ticks % 5 == 0 { saveSnapshot() }
         updateMenuText()
     }
 
@@ -729,15 +820,20 @@ final class LockEngine: ObservableObject {
 
     /// The lecture app was quit: start it again (and reopen the page you were on if it was a browser).
     private func relaunch() {
-        guard !relaunching, let old = target, let appURL = old.bundleURL else { return }
+        guard !relaunching, let appURL = target?.bundleURL else { return }
         relaunching = true
+        launch(appURL) { app in
+            self.relaunching = false
+            if let app { self.target = app }
+        }
+    }
+
+    /// Opens the app, on `lastGoodURL` if there is one. `done` runs on the main queue.
+    private func launch(_ appURL: URL, done: @escaping (NSRunningApplication?) -> Void) {
         let cfg = NSWorkspace.OpenConfiguration()
         cfg.activates = true
         let done: (NSRunningApplication?, Error?) -> Void = { app, _ in
-            DispatchQueue.main.async {
-                self.relaunching = false
-                if let app { self.target = app }
-            }
+            DispatchQueue.main.async { done(app) }
         }
         if let s = lastGoodURL, let url = URL(string: s) {
             NSWorkspace.shared.open([url], withApplicationAt: appURL, configuration: cfg, completionHandler: done)
@@ -1165,6 +1261,9 @@ func showMainWindow() {
 }
 
 final class AppDelegate: NSObject, NSApplicationDelegate {
+    func applicationDidFinishLaunching(_ notification: Notification) {
+        DispatchQueue.main.async { LockEngine.shared.restore() }
+    }
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
         LockEngine.shared.locked ? .terminateCancel : .terminateNow
     }
@@ -1212,7 +1311,64 @@ struct MenuBarMenu: View {
     }
 }
 
+// MARK: - Watchdog
+
+/// `LectureLock --watchdog <pid>`: no window, no Dock icon. Reopens LectureLock while a lock is saved.
+enum Watchdog {
+    static let bundleID = Bundle.main.bundleIdentifier ?? "com.ethansaba.lecturelock"
+    static let pidFile = URL(fileURLWithPath: NSTemporaryDirectory()).appendingPathComponent("lecturelock-watchdog.pid")
+
+    /// Read straight from cfprefsd each time, so the main app's writes show up.
+    static func snapshot() -> LockSnapshot? {
+        CFPreferencesAppSynchronize(bundleID as CFString)
+        guard let data = CFPreferencesCopyAppValue(LockSnapshot.key as CFString, bundleID as CFString) as? Data else { return nil }
+        return try? JSONDecoder().decode(LockSnapshot.self, from: data)
+    }
+
+    static var appURL: URL? {
+        Bundle.main.bundleURL.pathExtension == "app" ? Bundle.main.bundleURL
+            : NSWorkspace.shared.urlForApplication(withBundleIdentifier: bundleID)
+    }
+
+    /// Whether `pid` is a live process running this executable.
+    static func isUs(_ pid: pid_t) -> Bool {
+        guard kill(pid, 0) == 0 else { return false }
+        var buf = [CChar](repeating: 0, count: 4096)
+        guard proc_pidpath(pid, &buf, UInt32(buf.count)) > 0 else { return false }
+        return String(cString: buf) == Bundle.main.executablePath
+    }
+
+    static func run() {
+        let me = getpid()
+        // Only one at a time.
+        if let s = try? String(contentsOf: pidFile, encoding: .utf8), let pid = pid_t(s), pid != me, isUs(pid) { return }
+        try? String(me).write(to: pidFile, atomically: true, encoding: .utf8)
+        defer {
+            if (try? String(contentsOf: pidFile, encoding: .utf8)) == String(me) { try? FileManager.default.removeItem(at: pidFile) }
+        }
+        var lastLaunch = Date.distantPast
+        while let s = snapshot(), !s.isOver {
+            let running = NSRunningApplication.runningApplications(withBundleIdentifier: bundleID)
+                .contains { $0.processIdentifier != me && !$0.isTerminated }
+            // Give a relaunch time to come up before trying again.
+            if !running, Date().timeIntervalSince(lastLaunch) > 10, let url = appURL {
+                lastLaunch = Date()
+                let cfg = NSWorkspace.OpenConfiguration()
+                cfg.createsNewApplicationInstance = true
+                NSWorkspace.shared.openApplication(at: url, configuration: cfg)
+            }
+            RunLoop.current.run(until: Date().addingTimeInterval(1))
+        }
+    }
+}
+
 @main
+enum Main {
+    static func main() {
+        if CommandLine.arguments.contains("--watchdog") { Watchdog.run() } else { LectureLockApp.main() }
+    }
+}
+
 struct LectureLockApp: App {
     @NSApplicationDelegateAdaptor(AppDelegate.self) var delegate
     @ObservedObject var engine = LockEngine.shared
