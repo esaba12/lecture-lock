@@ -288,6 +288,7 @@ struct LockSnapshot: Codable {
     var courseEnd: Int
     var completed: [Int]
     var maxWatched: Double
+    var hardMode: Bool?
 
     /// A timer that ran out while LectureLock wasn't running.
     var isOver: Bool { mode == LockMode.timer.rawValue && Date() >= endsAt }
@@ -323,12 +324,17 @@ final class LockEngine: ObservableObject {
     @Published var menuBar: Bool { didSet { defaults.set(menuBar, forKey: "menuBar") } }
     @Published var sound: Bool { didSet { defaults.set(sound, forKey: "sound") } }
     @Published var notify: Bool { didSet { defaults.set(notify, forKey: "notify") } }
+    /// Emergency exit stays closed for the first 15 minutes of a lock.
+    @Published var hardMode: Bool { didSet { defaults.set(hardMode, forKey: "hardMode") } }
     @Published var goalLink: String { didSet { defaults.set(goalLink, forKey: "goalLink") } }
     @Published var goalText: String { didSet { defaults.set(goalText, forKey: "goalText") } }
     @Published var courseGoal: [String: Int] { didSet { defaults.set(courseGoal, forKey: "courseGoal") } }
 
     private(set) var target: NSRunningApplication?
     private(set) var lockedMode: LockMode = .timer
+    /// Hard mode as it was at lock time, so changing the setting mid-lock does nothing.
+    private(set) var lockedHardMode = false
+    static let hardModeDelay: TimeInterval = 15 * 60
     private var lastGoodURL: String?
     private var lockedAnchor: String?
     private var observer: NSObjectProtocol?
@@ -358,6 +364,7 @@ final class LockEngine: ObservableObject {
         menuBar = defaults.object(forKey: "menuBar") as? Bool ?? true
         sound = defaults.object(forKey: "sound") as? Bool ?? true
         notify = defaults.object(forKey: "notify") as? Bool ?? true
+        hardMode = defaults.bool(forKey: "hardMode")
         goalLink = defaults.string(forKey: "goalLink") ?? ""
         goalText = defaults.string(forKey: "goalText") ?? ""
         courseGoal = defaults.dictionary(forKey: "courseGoal") as? [String: Int] ?? [:]
@@ -457,6 +464,7 @@ final class LockEngine: ObservableObject {
 
         target = app
         lockedMode = mode
+        lockedHardMode = hardMode
         status = ""
         lockedAt = Date()
         endsAt = mode == .timer || mode == .manual ? Date().addingTimeInterval(Double(minutes) * 60) : .distantFuture
@@ -501,7 +509,7 @@ final class LockEngine: ObservableObject {
             lastGoodURL: lastGoodURL, tabTitle: tabTitle, lockedAt: lockedAt, endsAt: endsAt,
             goalLink: goalLink, goalText: goalText, course: lockedCourse?.name,
             courseStart: courseRange.lowerBound, courseEnd: courseRange.upperBound,
-            completed: completed.sorted(), maxWatched: maxWatched)
+            completed: completed.sorted(), maxWatched: maxWatched, hardMode: lockedHardMode)
         guard let data = try? JSONEncoder().encode(snap), data != lastSnapshot else { return }
         lastSnapshot = data
         defaults.set(data, forKey: LockSnapshot.key)
@@ -523,6 +531,7 @@ final class LockEngine: ObservableObject {
         lockedCourse = courses.first { $0.name == s.course }
         courseRange = s.courseStart...max(s.courseStart, s.courseEnd); completed = Set(s.completed)
         video = nil; maxWatched = s.maxWatched; typedLinkWarning = false; status = ""
+        lockedHardMode = s.hardMode ?? false
 
         if let app = NSRunningApplication.runningApplications(withBundleIdentifier: s.bundleID).first(where: { !$0.isTerminated }) {
             target = app
@@ -654,6 +663,17 @@ final class LockEngine: ObservableObject {
         if let observer { NSWorkspace.shared.notificationCenter.removeObserver(observer) }
         observer = nil
         target = nil
+    }
+
+    /// Seconds until the emergency exit opens (0 = open now).
+    var exitOpensIn: Int {
+        guard lockedHardMode else { return 0 }
+        return max(0, Int(lockedAt.addingTimeInterval(Self.hardModeDelay).timeIntervalSinceNow.rounded(.up)))
+    }
+
+    /// The emergency exit: giving up early, kept separate from finishing.
+    func bail() {
+        unlock()
     }
 
     func finish(_ message: String) {
@@ -937,7 +957,7 @@ struct ContentView: View {
             }
             .padding(28)
         }
-        .frame(width: 440, height: !engine.locked && showAdvanced ? 800 : 580)
+        .frame(width: 440, height: !engine.locked && showAdvanced ? 860 : 580)
         .onAppear { engine.refresh() }
         .animation(.easeOut(duration: 0.25), value: engine.locked)
     }
@@ -1123,6 +1143,13 @@ struct ContentView: View {
                             }
                         }
                     }
+                    setting("EMERGENCY EXIT") {
+                        HStack(spacing: 0) {
+                            segment("ANYTIME", selected: !engine.hardMode) { engine.hardMode = false }
+                            segment("AFTER 15 MIN", selected: engine.hardMode) { engine.hardMode = true }
+                        }
+                        .frame(width: 304)
+                    }
                 }
                 .padding(.top, 4)
                 .transition(.opacity)
@@ -1149,12 +1176,28 @@ struct ContentView: View {
                 }
             }
             Spacer()
+            TimelineView(.periodic(from: .now, by: 1)) { _ in
+                if engine.exitOpensIn > 0 {
+                    label("EMERGENCY EXIT OPENS IN \(clock(engine.exitOpensIn))")
+                } else {
+                    emergencyExit
+                }
+            }
+        }
+    }
+
+    var emergencyExit: some View {
+        VStack(alignment: .leading, spacing: 0) {
             label("EMERGENCY EXIT — TYPE: \(unlockPhrase)")
             HStack(spacing: 8) {
                 TextField("", text: $phrase)
                     .textFieldStyle(.plain).font(mono(12)).foregroundColor(.paper)
                     .padding(8).overlay(Rectangle().stroke(Color.paper.opacity(0.25), lineWidth: 1))
                     .onSubmit(tryUnlock)
+                    // Type it, don't paste it: reject any edit that adds more than one character at once.
+                    .onChange(of: phrase) { old, new in
+                        if new.count - old.count > 1 { phrase = old }
+                    }
                 Button(action: tryUnlock) {
                     Text("EXIT").font(mono(12, .bold)).padding(.horizontal, 14).frame(height: 32)
                         .foregroundColor(.paper).overlay(Rectangle().stroke(Color.paper.opacity(0.4), lineWidth: 1))
@@ -1203,9 +1246,10 @@ struct ContentView: View {
     }
 
     func tryUnlock() {
+        guard engine.exitOpensIn == 0 else { return }
         if phrase.lowercased().trimmingCharacters(in: .whitespaces) == unlockPhrase {
             phrase = ""
-            engine.unlock()
+            engine.bail()
         }
     }
 
