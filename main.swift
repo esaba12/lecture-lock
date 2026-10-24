@@ -3,6 +3,7 @@ import AppKit
 import UniformTypeIdentifiers
 import UserNotifications
 import ServiceManagement
+import Carbon
 
 // MARK: - Browser control (AppleScript)
 
@@ -1372,8 +1373,29 @@ func showMainWindow() {
     NSWorkspace.shared.openApplication(at: Bundle.main.bundleURL, configuration: cfg)
 }
 
+/// ⌃⌥L from anywhere locks in with the saved settings. Carbon hot keys need no Accessibility permission.
+private var hotKeyRef: EventHotKeyRef?
+
+func registerHotKey() {
+    var spec = EventTypeSpec(eventClass: OSType(kEventClassKeyboard), eventKind: UInt32(kEventHotKeyPressed))
+    InstallEventHandler(GetApplicationEventTarget(), { _, _, _ in
+        DispatchQueue.main.async {
+            let engine = LockEngine.shared
+            guard !engine.locked else { return }
+            if !engine.lockFrontmost() {
+                NSSound(named: "Basso")?.play()
+                showMainWindow()
+            }
+        }
+        return noErr
+    }, 1, &spec, nil, nil)
+    let id = EventHotKeyID(signature: OSType(0x4C4C4B21), id: 1)  // 'LLK!'
+    RegisterEventHotKey(UInt32(kVK_ANSI_L), UInt32(controlKey | optionKey), id, GetApplicationEventTarget(), 0, &hotKeyRef)
+}
+
 final class AppDelegate: NSObject, NSApplicationDelegate {
     func applicationDidFinishLaunching(_ notification: Notification) {
+        registerHotKey()
         DispatchQueue.main.async { LockEngine.shared.restore() }
     }
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
@@ -1400,6 +1422,7 @@ struct MenuBarMenu: View {
             Button("Show Lecture Lock…") { show() }
         } else {
             Button("Lock In · \(engine.settingsSummary)") { lock() }
+                .keyboardShortcut("l", modifiers: [.control, .option])
             Menu("Quick timer") {
                 ForEach([30, 60, 90], id: \.self) { m in
                     Button("\(m) minutes") { lock(.timer, minutes: m) }
