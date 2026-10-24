@@ -302,7 +302,6 @@ final class LockEngine: ObservableObject {
     @Published var apps: [NSRunningApplication] = []
     @Published var targetPID: pid_t? { didSet { if targetPID != oldValue { peekTab() } } }
     @Published var idleTabURL: String?
-    @Published var minutes = 60
     @Published var locked = false
     @Published var lockedAt = Date()
     @Published var endsAt = Date()
@@ -319,6 +318,7 @@ final class LockEngine: ObservableObject {
     @Published var typedLinkWarning = false
 
     // Settings, remembered between launches.
+    @Published var minutes: Int { didSet { defaults.set(minutes, forKey: "minutes") } }
     @Published var mode: LockMode { didSet { defaults.set(mode.rawValue, forKey: "mode") } }
     @Published var scope: LockScope { didSet { defaults.set(scope.rawValue, forKey: "scope") } }
     @Published var allowed: Set<String> { didSet { defaults.set(Array(allowed), forKey: "allowed") } }
@@ -341,6 +341,8 @@ final class LockEngine: ObservableObject {
         // Start the menu bar icon at the far right, where it's last to be hidden behind the notch.
         // ⌘-dragging it saves a new position over this.
         defaults.register(defaults: ["NSStatusItem Preferred Position Item-0": 1])
+        let saved = defaults.integer(forKey: "minutes")
+        minutes = saved == 0 ? 60 : min(max(saved / 5 * 5, 5), 180)
         mode = LockMode(rawValue: defaults.string(forKey: "mode") ?? "") ?? .timer
         scope = LockScope(rawValue: defaults.string(forKey: "scope") ?? "") ?? .page
         allowed = Set(defaults.stringArray(forKey: "allowed") ?? [])
