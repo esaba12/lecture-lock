@@ -86,7 +86,7 @@ struct ContentView: View {
             }
             .padding(28)
         }
-        .frame(width: 440, height: !engine.locked && showAdvanced ? 880 : 580)
+        .frame(width: 440, height: !engine.locked && showAdvanced ? 800 : 620)
         .onAppear { engine.refresh() }
         .animation(.easeOut(duration: 0.25), value: engine.locked)
     }
@@ -94,6 +94,34 @@ struct ContentView: View {
     // MARK: Setup screen
 
     var idleView: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            // Scrolls when the settings outgrow the window (e.g. Advanced open on a small screen); LOCK IN stays put.
+            ScrollView(.vertical, showsIndicators: false) { setup }
+                .mask(VStack(spacing: 0) {
+                    Rectangle()
+                    LinearGradient(colors: [.black, .clear], startPoint: .top, endPoint: .bottom).frame(height: 24)
+                })
+            if !engine.status.isEmpty {
+                Text(engine.status).font(mono(10)).foregroundColor(.signal)
+                    .fixedSize(horizontal: false, vertical: true).padding(.vertical, 10)
+            }
+            Button { engine.lock() } label: {
+                HStack {
+                    Text("LOCK IN").font(mono(18, .heavy)).tracking(4)
+                    Spacer()
+                    Text("→").font(mono(22, .bold))
+                }
+                .padding(.horizontal, 20).frame(height: 58)
+                .foregroundColor(.ink).background(Color.signal)
+            }
+            .buttonStyle(.plain)
+            .keyboardShortcut(.defaultAction)
+            .disabled(engine.targetPID == nil)
+            .padding(.top, engine.status.isEmpty ? 12 : 0)
+        }
+    }
+
+    var setup: some View {
         VStack(alignment: .leading, spacing: 0) {
             Text("Nothing but\nthe lecture.").font(mono(34, .bold)).foregroundColor(.paper).lineSpacing(2)
             if !engine.history.isEmpty { stats.padding(.top, 10) }
@@ -114,25 +142,8 @@ struct ContentView: View {
 
             VStack(alignment: .leading, spacing: 0) { untilSection }.padding(.top, 22)
             advanced.padding(.top, 22)
-
-            Spacer(minLength: 12)
-            if !engine.status.isEmpty {
-                Text(engine.status).font(mono(10)).foregroundColor(.signal)
-                    .fixedSize(horizontal: false, vertical: true).padding(.bottom, 10)
-            }
-            Button { engine.lock() } label: {
-                HStack {
-                    Text("LOCK IN").font(mono(18, .heavy)).tracking(4)
-                    Spacer()
-                    Text("→").font(mono(22, .bold))
-                }
-                .padding(.horizontal, 20).frame(height: 58)
-                .foregroundColor(.ink).background(Color.signal)
-            }
-            .buttonStyle(.plain)
-            .keyboardShortcut(.defaultAction)
-            .disabled(engine.targetPID == nil)
         }
+        .frame(maxWidth: .infinity, alignment: .leading)
     }
 
     /// TODAY 1H 20M · WEEK 6H 5M · STREAK 4D · 2 EXITS
