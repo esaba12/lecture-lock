@@ -81,75 +81,60 @@ func normalizeLink(_ s: String) -> String {
     return t
 }
 
+/// AppleScript that looks for a tab whose URL contains `anchor`: the front tab first (runs `onFront`),
+/// then every tab of every window (runs `onFound` with `w`, `t` and Chromium's tab index `i` bound).
+/// `otherwise` runs if none match.
+func tabSearchScript(_ kind: BrowserKind, anchor: String, before: String = "", onFront: String, onFound: String, otherwise: String) -> String {
+    let a = esc(anchor)
+    return """
+    tell application "\(kind.appName)"
+      \(before)
+      if (count of windows) > 0 then
+        set t to \(kind.frontTab)
+        set tu to ""
+        try
+          set tu to URL of t
+        end try
+        if tu contains "\(a)" then \(onFront)
+      end if
+      repeat with w in windows
+        set i to 0
+        repeat with t in tabs of w
+          set i to i + 1
+          set tu to ""
+          try
+            set tu to URL of t
+          end try
+          if tu contains "\(a)" then
+            \(onFound)
+          end if
+        end repeat
+      end repeat
+      \(otherwise)
+    end tell
+    """
+}
+
 /// Make sure a tab matching `anchor` is the one in front; reopen `url` if none is left.
 /// Returns the front tab's URL when it matches.
 @discardableResult
 func enforceTab(_ kind: BrowserKind, url: String, anchor: String) -> String? {
-    let u = esc(url), a = esc(anchor)
-    let src: String
-    switch kind {
-    case .chromium(let name):
-        src = """
-        tell application "\(name)"
-          if (count of windows) is 0 then
-            make new window
-            set URL of active tab of window 1 to "\(u)"
-            return ""
-          end if
-          set cur to ""
-          try
-            set cur to URL of active tab of window 1
-          end try
-          if cur contains "\(a)" then return cur
-          repeat with w in windows
-            set i to 0
-            repeat with t in tabs of w
-              set i to i + 1
-              set tu to ""
-              try
-                set tu to URL of t
-              end try
-              if tu contains "\(a)" then
-                set active tab index of w to i
-                set index of w to 1
-                return ""
-              end if
-            end repeat
-          end repeat
-          tell window 1 to make new tab with properties {URL:"\(u)"}
-          return ""
-        end tell
-        """
+    let u = esc(url)
+    let (noWindows, select, reopen) = switch kind {
+    case .chromium:
+        ("make new window\n    set URL of active tab of window 1 to \"\(u)\"",
+         "set active tab index of w to i",
+         "tell window 1 to make new tab with properties {URL:\"\(u)\"}")
     case .safari:
-        src = """
-        tell application "Safari"
-          if (count of windows) is 0 then
-            make new document with properties {URL:"\(u)"}
-            return ""
-          end if
-          set cur to ""
-          try
-            set cur to URL of current tab of front window
-          end try
-          if cur contains "\(a)" then return cur
-          repeat with w in windows
-            repeat with t in tabs of w
-              set tu to ""
-              try
-                set tu to URL of t
-              end try
-              if tu contains "\(a)" then
-                set current tab of w to t
-                set index of w to 1
-                return ""
-              end if
-            end repeat
-          end repeat
-          tell front window to set current tab to (make new tab with properties {URL:"\(u)"})
-          return ""
-        end tell
-        """
+        ("make new document with properties {URL:\"\(u)\"}",
+         "set current tab of w to t",
+         "tell front window to set current tab to (make new tab with properties {URL:\"\(u)\"})")
     }
+    let src = tabSearchScript(kind, anchor: anchor,
+        before: "if (count of windows) is 0 then\n    \(noWindows)\n    return \"\"\n  end if",
+        onFront: "return tu",
+        onFound: "\(select)\n        set index of w to 1\n        return \"\"",
+        otherwise: "\(reopen)\n  return \"\"")
     let cur = runScript(src)?.stringValue ?? ""
     return cur.isEmpty ? nil : cur
 }
@@ -160,33 +145,13 @@ enum TabJS { case value(String), jsDisabled, failed }
 
 /// Runs `js` in the front tab if it matches `anchor`, else the first tab that does. Returns "notab" if none.
 func runInLectureTab(_ kind: BrowserKind, anchor: String, js: String) -> TabJS {
-    let a = esc(anchor), j = esc(js)
+    let j = esc(js)
     let exec = switch kind {
     case .chromium: "execute t javascript \"\(j)\""
     case .safari: "do JavaScript \"\(j)\" in t"
     }
-    let src = """
-    tell application "\(kind.appName)"
-      if (count of windows) > 0 then
-        set t to \(kind.frontTab)
-        set tu to ""
-        try
-          set tu to URL of t
-        end try
-        if tu contains "\(a)" then return (\(exec))
-      end if
-      repeat with w in windows
-        repeat with t in tabs of w
-          set tu to ""
-          try
-            set tu to URL of t
-          end try
-          if tu contains "\(a)" then return (\(exec))
-        end repeat
-      end repeat
-      return "notab"
-    end tell
-    """
+    let src = tabSearchScript(kind, anchor: anchor, onFront: "return (\(exec))",
+                              onFound: "return (\(exec))", otherwise: "return \"notab\"")
     var err: NSDictionary?
     let result = NSAppleScript(source: src)?.executeAndReturnError(&err)
     if let err {
