@@ -268,6 +268,43 @@ enum LockMode: String, CaseIterable, Identifiable {
 
 enum LockScope: String { case page, site }
 
+/// Timer-mode work/break rounds. The slider still sets the total session length.
+enum BreakPlan: String, CaseIterable, Identifiable {
+    case none, short, long
+    var id: String { rawValue }
+    var workMinutes: Int { switch self { case .none: 0; case .short: 25; case .long: 50 } }
+    var breakMinutes: Int { switch self { case .none: 0; case .short: 5; case .long: 10 } }
+    var title: String { self == .none ? "NO BREAKS" : "\(workMinutes) + \(breakMinutes)" }
+}
+
+struct SessionPhase: Equatable {
+    var onBreak: Bool
+    var round: Int, rounds: Int
+    /// Seconds from session start until this phase / the whole session ends.
+    var phaseEnd: Double, sessionEnd: Double
+}
+
+/// Where a session of `total` seconds stands after `elapsed` seconds. Work and break blocks
+/// alternate starting with work; a break that would run into the end is dropped, so the
+/// session ends where it would have started.
+func sessionPhase(total: Double, plan: BreakPlan, elapsed: Double) -> SessionPhase {
+    let work = Double(plan.workMinutes * 60), brk = Double(plan.breakMinutes * 60)
+    guard plan != .none, total > 0 else {
+        return SessionPhase(onBreak: false, round: 1, rounds: 1, phaseEnd: total, sessionEnd: total)
+    }
+    let cycle = work + brk
+    let full = (total / cycle).rounded(.down)
+    let rest = total - full * cycle
+    let rounds = Int(full) + (rest > 0 ? 1 : 0)
+    let end = rest == 0 ? total - brk : full * cycle + min(rest, work)
+    let t = min(max(elapsed, 0), end)
+    let i = min((t / cycle).rounded(.down), Double(rounds - 1))
+    let into = t - i * cycle
+    let onBreak = into >= work && t < end
+    let phaseEnd = onBreak ? (i + 1) * cycle : min(i * cycle + work, end)
+    return SessionPhase(onBreak: onBreak, round: Int(i) + 1, rounds: rounds, phaseEnd: phaseEnd, sessionEnd: end)
+}
+
 /// Always allowed, so files and the desktop stay reachable.
 let finderID = "com.apple.finder"
 
@@ -290,6 +327,9 @@ struct LockSnapshot: Codable {
     var completed: [Int]
     var maxWatched: Double
     var hardMode: Bool?
+    var breaks: String?
+    var phaseOrigin: Date?
+    var sessionTotal: Double?
 
     /// A timer that ran out while LectureLock wasn't running.
     var isOver: Bool { mode == LockMode.timer.rawValue && Date() >= endsAt }
@@ -308,6 +348,9 @@ final class LockEngine: ObservableObject {
     @Published var tabTitle: String?
     @Published var status = ""
     @Published var menuText = ""
+    @Published var onBreak = false
+    private(set) var phaseEndsAt = Date()
+    private(set) var round = 1, rounds = 1
 
     // Live progress for the condition modes.
     @Published var video: VideoState?
@@ -327,6 +370,7 @@ final class LockEngine: ObservableObject {
     @Published var notify: Bool { didSet { defaults.set(notify, forKey: "notify") } }
     /// Emergency exit stays closed for the first 15 minutes of a lock.
     @Published var hardMode: Bool { didSet { defaults.set(hardMode, forKey: "hardMode") } }
+    @Published var breaks: BreakPlan { didSet { defaults.set(breaks.rawValue, forKey: "breaks") } }
     @Published var goalLink: String { didSet { defaults.set(goalLink, forKey: "goalLink") } }
     @Published var goalText: String { didSet { defaults.set(goalText, forKey: "goalText") } }
     @Published var courseGoal: [String: Int] { didSet { defaults.set(courseGoal, forKey: "courseGoal") } }
@@ -337,6 +381,10 @@ final class LockEngine: ObservableObject {
     /// Hard mode as it was at lock time, so changing the setting mid-lock does nothing.
     private(set) var lockedHardMode = false
     static let hardModeDelay: TimeInterval = 15 * 60
+    private(set) var lockedPlan: BreakPlan = .none
+    /// Phases are measured from here; ending a break early moves it back.
+    private var phaseOrigin = Date()
+    private var sessionTotal: Double = 0
     private var lastGoodURL: String?
     private var lockedAnchor: String?
     private var observer: NSObjectProtocol?
@@ -367,6 +415,7 @@ final class LockEngine: ObservableObject {
         sound = defaults.object(forKey: "sound") as? Bool ?? true
         notify = defaults.object(forKey: "notify") as? Bool ?? true
         hardMode = defaults.bool(forKey: "hardMode")
+        breaks = BreakPlan(rawValue: defaults.string(forKey: "breaks") ?? "") ?? .none
         goalLink = defaults.string(forKey: "goalLink") ?? ""
         goalText = defaults.string(forKey: "goalText") ?? ""
         courseGoal = defaults.dictionary(forKey: "courseGoal") as? [String: Int] ?? [:]
@@ -470,7 +519,15 @@ final class LockEngine: ObservableObject {
         lockedHardMode = hardMode
         status = ""
         lockedAt = Date()
-        endsAt = mode == .timer || mode == .manual ? Date().addingTimeInterval(Double(minutes) * 60) : .distantFuture
+        // Quick timers from the menu bar ignore the break plan.
+        lockedPlan = mode == .timer && override == nil && overrideMinutes == nil ? breaks : .none
+        phaseOrigin = lockedAt
+        sessionTotal = Double(minutes) * 60
+        onBreak = false
+        updatePhase()
+        endsAt = mode == .timer || mode == .manual
+            ? lockedAt.addingTimeInterval(sessionPhase(total: sessionTotal, plan: lockedPlan, elapsed: 0).sessionEnd)
+            : .distantFuture
         warnAtFive = switch mode {
         case .timer: minutes > 5
         case .video: video.map { ($0.duration - $0.current) / $0.rate > 300 } ?? false
@@ -481,28 +538,32 @@ final class LockEngine: ObservableObject {
         arm()
     }
 
-    /// Hides everything else and starts enforcing. Shared by LOCK IN and restoring a saved lock.
+    /// Starts a lock that's been set up. Shared by LOCK IN and restoring a saved lock.
     private func arm() {
         locked = true
         ticks = 0
         updateMenuText()
+        NSApp.hide(nil)
+        enforce()
+        timer = Timer.scheduledTimer(withTimeInterval: 1, repeats: true) { [weak self] _ in self?.tick() }
+        saveSnapshot()
+        startWatchdog()
+    }
 
+    /// Hides everything else, brings the lecture forward, and bounces back any app that gets activated.
+    private func enforce() {
         for other in NSWorkspace.shared.runningApplications
         where other.activationPolicy == .regular && !isAllowed(other) {
             other.hide()
         }
-        NSApp.hide(nil)
         bringTarget()
-
+        if let observer { NSWorkspace.shared.notificationCenter.removeObserver(observer) }
         observer = NSWorkspace.shared.notificationCenter.addObserver(
             forName: NSWorkspace.didActivateApplicationNotification, object: nil, queue: .main
         ) { [weak self] note in
             guard let a = note.userInfo?[NSWorkspace.applicationUserInfoKey] as? NSRunningApplication else { return }
             self?.handleActivation(a)
         }
-        timer = Timer.scheduledTimer(withTimeInterval: 1, repeats: true) { [weak self] _ in self?.tick() }
-        saveSnapshot()
-        startWatchdog()
     }
 
     private func saveSnapshot() {
@@ -512,7 +573,8 @@ final class LockEngine: ObservableObject {
             lastGoodURL: lastGoodURL, tabTitle: tabTitle, lockedAt: lockedAt, endsAt: endsAt,
             goalLink: goalLink, goalText: goalText, course: lockedCourse?.name,
             courseStart: courseRange.lowerBound, courseEnd: courseRange.upperBound,
-            completed: completed.sorted(), maxWatched: maxWatched, hardMode: lockedHardMode)
+            completed: completed.sorted(), maxWatched: maxWatched, hardMode: lockedHardMode,
+            breaks: lockedPlan.rawValue, phaseOrigin: phaseOrigin, sessionTotal: sessionTotal)
         guard let data = try? JSONEncoder().encode(snap), data != lastSnapshot else { return }
         lastSnapshot = data
         defaults.set(data, forKey: LockSnapshot.key)
@@ -535,6 +597,11 @@ final class LockEngine: ObservableObject {
         courseRange = s.courseStart...max(s.courseStart, s.courseEnd); completed = Set(s.completed)
         video = nil; maxWatched = s.maxWatched; typedLinkWarning = false; status = ""
         lockedHardMode = s.hardMode ?? false
+        lockedPlan = BreakPlan(rawValue: s.breaks ?? "") ?? .none
+        phaseOrigin = s.phaseOrigin ?? s.lockedAt
+        sessionTotal = s.sessionTotal ?? s.endsAt.timeIntervalSince(s.lockedAt)
+        onBreak = false
+        updatePhase()
 
         if let app = NSRunningApplication.runningApplications(withBundleIdentifier: s.bundleID).first(where: { !$0.isTerminated }) {
             target = app
@@ -637,7 +704,7 @@ final class LockEngine: ObservableObject {
     /// One line describing the saved settings, for the menu bar.
     var settingsSummary: String {
         switch mode {
-        case .timer: durationText(minutes).lowercased()
+        case .timer: durationText(minutes).lowercased() + (breaks == .none ? "" : " · \(breaks.title) breaks")
         case .manual: "at least \(durationText(minutes).lowercased())"
         case .video: "until the video ends"
         case .link: "until I reach \(normalizeLink(goalLink).isEmpty ? "a link" : normalizeLink(goalLink))"
@@ -662,6 +729,7 @@ final class LockEngine: ObservableObject {
         locked = false
         session += 1
         clearSnapshot()
+        onBreak = false
         timer?.invalidate(); timer = nil
         if let observer { NSWorkspace.shared.notificationCenter.removeObserver(observer) }
         observer = nil
@@ -698,7 +766,9 @@ final class LockEngine: ObservableObject {
 
     /// Heads-ups while locked: five minutes left, or manual mode's minimum time is up.
     private func checkWarnings() {
-        if warnAtFive, lockedMode != .video || video != nil, clockSeconds <= 300 {
+        // With breaks, clockSeconds is the current block; the heads-up is about the whole session.
+        let left = lockedMode == .timer ? Int(endsAt.timeIntervalSinceNow) : clockSeconds
+        if warnAtFive, lockedMode != .video || video != nil, left <= 300 {
             warnAtFive = false
             post("5 minutes left.")
         }
@@ -727,7 +797,7 @@ final class LockEngine: ObservableObject {
     var canSayDone: Bool { lockedMode == .manual && Date() >= endsAt }
 
     private func handleActivation(_ app: NSRunningApplication) {
-        guard locked, !isAllowed(app) else { return }
+        guard locked, !onBreak, !isAllowed(app) else { return }
         app.hide()
         bringTarget()
     }
@@ -743,6 +813,10 @@ final class LockEngine: ObservableObject {
         guard locked else { return }
         ticks += 1
         if lockedMode == .timer, Date() >= endsAt { finish("Time's up. Nice work."); return }
+        if lockedPlan != .none {
+            updatePhase()
+            if onBreak { updateMenuText(); return }   // keep counting, stop enforcing
+        }
         guard let target else { return }
         if target.isTerminated { relaunch(); return }
 
@@ -798,6 +872,35 @@ final class LockEngine: ObservableObject {
         }
     }
 
+    /// Recomputes the work/break phase and handles the switch between them.
+    private func updatePhase() {
+        let p = sessionPhase(total: sessionTotal, plan: lockedPlan, elapsed: Date().timeIntervalSince(phaseOrigin))
+        phaseEndsAt = phaseOrigin.addingTimeInterval(p.phaseEnd)
+        round = p.round; rounds = p.rounds
+        guard locked, p.onBreak != onBreak else { return }
+        onBreak = p.onBreak
+        if sound { NSSound(named: "Glass")?.play() }
+        if onBreak {
+            if let observer { NSWorkspace.shared.notificationCenter.removeObserver(observer) }
+            observer = nil
+        } else {
+            enforce()
+            if let target, let kind = BrowserKind.of(target), let url = lastGoodURL, let a = lockedAnchor {
+                scriptQueue.async { enforceTab(kind, url: url, anchor: a) }
+            }
+        }
+    }
+
+    /// BACK TO WORK: the rest of the session shifts earlier by the break time skipped.
+    func endBreakEarly() {
+        guard locked, onBreak else { return }
+        let skipped = max(0, phaseEndsAt.timeIntervalSinceNow)
+        phaseOrigin.addTimeInterval(-skipped)
+        endsAt.addTimeInterval(-skipped)
+        updatePhase()
+        updateMenuText()
+    }
+
     /// Tracks the furthest point reached; unlocks once the end has been reached.
     private func pollVideo(_ s: String) {
         guard let v = parseVideo(s) else { return }  // ad, loading, or reopening
@@ -841,6 +944,7 @@ final class LockEngine: ObservableObject {
     /// For the others: seconds locked in so far.
     var clockSeconds: Int {
         switch lockedMode {
+        case .timer where lockedPlan != .none: return max(0, Int(phaseEndsAt.timeIntervalSinceNow))
         case .timer, .manual: return max(0, Int(endsAt.timeIntervalSinceNow))
         case .video:
             guard let v = video else { return 0 }
@@ -851,6 +955,7 @@ final class LockEngine: ObservableObject {
 
     private func updateMenuText() {
         switch lockedMode {
+        case .timer where onBreak: menuText = "☕ " + clock(clockSeconds)
         case .course: menuText = "\(coursesDone)/\(courseRange.count)"
         case .video where video?.paused == true: menuText = "❚❚ " + clock(clockSeconds)
         case .manual where canSayDone: menuText = "done?"
@@ -1086,6 +1191,18 @@ struct ContentView: View {
                 }
             }
             if engine.mode == .manual { hint("An I'M DONE button unlocks after this.") }
+            if engine.mode == .timer {
+                HStack(spacing: 0) {
+                    ForEach(BreakPlan.allCases) { p in
+                        segment(p.title, selected: engine.breaks == p) { engine.breaks = p }
+                    }
+                }
+                .padding(.top, 8)
+                if engine.breaks != .none {
+                    let p = sessionPhase(total: Double(engine.minutes) * 60, plan: engine.breaks, elapsed: 0)
+                    hint("\(p.rounds) \(p.rounds == 1 ? "round" : "rounds"), ends after \(durationText(Int(p.sessionEnd) / 60).lowercased()). No break at the end.")
+                }
+            }
 
         case .video:
             header("02 — UNTIL", "VIDEO ENDS")
@@ -1279,7 +1396,19 @@ struct ContentView: View {
     @ViewBuilder var progress: some View {
         switch engine.lockedMode {
         case .timer:
-            label("REMAINING")
+            if engine.lockedPlan == .none {
+                label("REMAINING")
+            } else if engine.onBreak {
+                label("BREAK · BACK AT \(engine.phaseEndsAt.formatted(date: .omitted, time: .shortened).uppercased())")
+                Button { engine.endBreakEarly() } label: {
+                    Text("BACK TO WORK →").font(mono(16, .heavy)).tracking(3)
+                        .frame(maxWidth: .infinity).frame(height: 48)
+                        .foregroundColor(.ink).background(Color.signal)
+                }
+                .buttonStyle(.plain)
+            } else {
+                label("WORK · ROUND \(engine.round) OF \(engine.rounds)")
+            }
         case .manual:
             if engine.canSayDone {
                 Button { engine.finish("Nice work.") } label: {
@@ -1413,6 +1542,11 @@ struct MenuBarMenu: View {
     var body: some View {
         if engine.locked {
             Text("Locked to \(engine.target?.localizedName ?? "—")")
+            if engine.lockedMode == .timer && engine.lockedPlan != .none {
+                Text(engine.onBreak
+                     ? "On break · back at \(engine.phaseEndsAt.formatted(date: .omitted, time: .shortened))"
+                     : "Work · round \(engine.round) of \(engine.rounds)")
+            }
             Text(engine.lockedMode == .course
                  ? "\(engine.coursesDone) of \(engine.courseRange.count) lessons done"
                  : engine.lockedMode == .timer || engine.lockedMode == .video || engine.lockedMode == .manual
