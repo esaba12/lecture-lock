@@ -17,6 +17,7 @@ A tiny macOS app: click **LOCK IN** and your Mac is locked to the lecture you're
   - **Also allow** — let a notes app (Notes, Notion, GoodNotes…) through alongside the lecture. Finder is always allowed.
 - Video, link, course and text modes read the page with a little JavaScript. One-time setup: Chrome/Brave › View › Developer › *Allow JavaScript from Apple Events* (Safari: Develop › same option).
 - **Menu bar icon** — 🔓 sits in the menu bar; click it to lock to whatever app you're using (saved settings, or a quick 30/60/90-min timer). While locked it shows the time left or lessons done. Can be turned off under Advanced.
+- **Hotkey** — ⌃⌥L locks in from anywhere with your saved settings, to whatever app you're using.
 - **Finish sound** — the chime when you unlock. Can be turned off under Advanced.
 - **Notifications** — a heads-up at 5 minutes left (timer and video), and when manual mode's minimum time is up. When the lock ends the window comes back even if you'd closed it. Can be turned off under Advanced.
 - **Open at login** — starts LectureLock (in the menu bar) when you log in. Off by default; under Advanced.
