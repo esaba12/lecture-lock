@@ -8,6 +8,7 @@ A tiny macOS app: click **LOCK IN** and your Mac is locked to the lecture you're
 - **Advanced** (collapsed by default):
   - **Unlock when…**
     - **Timer ends** (default) — 5–180 min slider.
+      - **Breaks** — `25 + 5` or `50 + 10` splits the session into work rounds with breaks between. The lock lifts during a break (a chime marks each switch) and snaps back after; *Back to work* ends a break early. No break at the end: 2 hr with 50 + 10 ends at 1 hr 50 min.
     - **Video ends** — unlocks when the page's video finishes. Skipping and speed-ups are fine; YouTube ads are ignored.
     - **I reach a link** — e.g. `sqlbolt.com/lesson/end`. Only counts if you click your way there (typed URLs have no referrer).
     - **I finish a course** — built-in SQLBolt support: pick a goal lesson; each lesson counts once all its exercises are solved, starting from the lesson you're on.
