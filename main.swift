@@ -329,6 +329,7 @@ final class LockEngine: ObservableObject {
     @Published var goalLink: String { didSet { defaults.set(goalLink, forKey: "goalLink") } }
     @Published var goalText: String { didSet { defaults.set(goalText, forKey: "goalText") } }
     @Published var courseGoal: [String: Int] { didSet { defaults.set(courseGoal, forKey: "courseGoal") } }
+    @Published var history: [Session] { didSet { defaults.set(try? JSONEncoder().encode(history), forKey: "history") } }
 
     private(set) var target: NSRunningApplication?
     private(set) var lockedMode: LockMode = .timer
@@ -368,6 +369,7 @@ final class LockEngine: ObservableObject {
         goalLink = defaults.string(forKey: "goalLink") ?? ""
         goalText = defaults.string(forKey: "goalText") ?? ""
         courseGoal = defaults.dictionary(forKey: "courseGoal") as? [String: Int] ?? [:]
+        history = defaults.data(forKey: "history").flatMap { try? JSONDecoder().decode([Session].self, from: $0) } ?? []
     }
 
     func refresh() {
@@ -673,10 +675,12 @@ final class LockEngine: ObservableObject {
 
     /// The emergency exit: giving up early, kept separate from finishing.
     func bail() {
+        record(finished: false)
         unlock()
     }
 
     func finish(_ message: String) {
+        record(finished: true)
         unlock()
         status = message
         if sound { NSSound(named: "Glass")?.play() }
@@ -701,6 +705,21 @@ final class LockEngine: ObservableObject {
             warnCanFinish = false
             post("Minimum time's up. You can finish whenever you're done.")
         }
+    }
+
+    private func record(finished: Bool) {
+        guard locked, Date().timeIntervalSince(lockedAt) >= 60 else { return }
+        let s = Session(start: lockedAt, end: Date(), mode: lockedMode.rawValue,
+                        app: target?.localizedName ?? "", finished: finished)
+        history = Array((history + [s]).suffix(2000))
+    }
+
+    var todayMinutes: Int { minutesLocked(history, since: Calendar.current.startOfDay(for: Date())) }
+    var weekMinutes: Int { minutesLocked(history, since: startOfWeek(Date(), .current)) }
+    var streak: Int { streakDays(history, now: Date(), .current) }
+    var weekBails: Int {
+        let since = startOfWeek(Date(), .current)
+        return history.filter { !$0.finished && $0.start >= since }.count
     }
 
     /// Manual mode: the "I'm done" button only works once the minimum time has passed.
@@ -873,6 +892,43 @@ func clock(_ s: Int) -> String {
               : String(format: "%02d:%02d", s / 60, s % 60)
 }
 
+// MARK: - History
+
+struct Session: Codable {
+    var start: Date
+    var end: Date
+    var mode: String
+    var app: String
+    var finished: Bool
+}
+
+/// Minutes locked in (finished or not) in sessions that started on or after `since`.
+func minutesLocked(_ history: [Session], since: Date) -> Int {
+    Int(history.filter { $0.start >= since }.reduce(0.0) { $0 + $1.end.timeIntervalSince($1.start) } / 60)
+}
+
+func startOfWeek(_ now: Date, _ cal: Calendar) -> Date {
+    cal.date(byAdding: .day, value: -6, to: cal.startOfDay(for: now))!
+}
+
+/// Consecutive days with a finished session, ending today (or yesterday if nothing yet today).
+func streakDays(_ history: [Session], now: Date, _ cal: Calendar) -> Int {
+    let days = Set(history.filter(\.finished).map { cal.startOfDay(for: $0.start) })
+    var day = cal.startOfDay(for: now)
+    if !days.contains(day) { day = cal.date(byAdding: .day, value: -1, to: day)! }
+    var n = 0
+    while days.contains(day) {
+        n += 1
+        day = cal.date(byAdding: .day, value: -1, to: day)!
+    }
+    return n
+}
+
+/// "1H 20M", "45M".
+func hoursMinutes(_ m: Int) -> String {
+    m < 60 ? "\(m)M" : "\(m / 60)H \(m % 60)M"
+}
+
 // MARK: - UI
 
 extension Color {
@@ -967,7 +1023,8 @@ struct ContentView: View {
     var idleView: some View {
         VStack(alignment: .leading, spacing: 0) {
             Text("Nothing but\nthe lecture.").font(mono(34, .bold)).foregroundColor(.paper).lineSpacing(2)
-            label("01 — SOURCE").padding(.top, 30)
+            if !engine.history.isEmpty { stats.padding(.top, 10) }
+            label("01 — SOURCE").padding(.top, engine.history.isEmpty ? 30 : 20)
             HStack(spacing: 8) {
                 Picker("", selection: $engine.targetPID) {
                     ForEach(engine.apps, id: \.processIdentifier) { app in
@@ -1003,6 +1060,17 @@ struct ContentView: View {
             .keyboardShortcut(.defaultAction)
             .disabled(engine.targetPID == nil)
         }
+    }
+
+    /// TODAY 1H 20M · WEEK 6H 5M · STREAK 4D · 2 EXITS
+    var stats: some View {
+        let dim = { (s: String) in Text(s).foregroundColor(.dim) }
+        let num = { (s: String) in Text(s).foregroundColor(.paper) }
+        var line = dim("TODAY ") + num(hoursMinutes(engine.todayMinutes))
+            + dim(" · WEEK ") + num(hoursMinutes(engine.weekMinutes))
+            + dim(" · STREAK ") + num("\(engine.streak)D")
+        if engine.weekBails > 0 { line = line + dim(" · \(engine.weekBails) EXIT\(engine.weekBails == 1 ? "" : "S")") }
+        return line.font(mono(10, .bold)).lineLimit(1)
     }
 
     /// Section 02 changes with the unlock condition picked under Advanced.
@@ -1339,6 +1407,10 @@ struct MenuBarMenu: View {
             }
             Text("Locks to the app you're using now")
             Divider()
+            if !engine.history.isEmpty {
+                Text("Today: \(hoursMinutes(engine.todayMinutes).lowercased())"
+                     + (engine.streak > 0 ? " · \(engine.streak)-day streak" : ""))
+            }
             Button("Open Lecture Lock…") { show() }
             Button("Quit") { NSApp.terminate(nil) }
         }
