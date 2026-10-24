@@ -1,6 +1,7 @@
 import SwiftUI
 import AppKit
 import UniformTypeIdentifiers
+import UserNotifications
 
 // MARK: - Browser control (AppleScript)
 
@@ -297,6 +298,7 @@ final class LockEngine: ObservableObject {
     @Published var allowed: Set<String> { didSet { defaults.set(Array(allowed), forKey: "allowed") } }
     @Published var menuBar: Bool { didSet { defaults.set(menuBar, forKey: "menuBar") } }
     @Published var sound: Bool { didSet { defaults.set(sound, forKey: "sound") } }
+    @Published var notify: Bool { didSet { defaults.set(notify, forKey: "notify") } }
     @Published var goalLink: String { didSet { defaults.set(goalLink, forKey: "goalLink") } }
     @Published var goalText: String { didSet { defaults.set(goalText, forKey: "goalText") } }
     @Published var courseGoal: [String: Int] { didSet { defaults.set(courseGoal, forKey: "courseGoal") } }
@@ -309,6 +311,8 @@ final class LockEngine: ObservableObject {
     private var timer: Timer?
     private var ticks = 0
     private var relaunching = false
+    private var warnAtFive = false      // "5 minutes left" still to come this session
+    private var warnCanFinish = false   // manual mode's "you can finish now" still to come
 
     /// All AppleScript runs here, one call at a time, so a hung browser can't freeze the UI.
     private let scriptQueue = DispatchQueue(label: "lecturelock.applescript")
@@ -328,6 +332,7 @@ final class LockEngine: ObservableObject {
         allowed = Set(defaults.stringArray(forKey: "allowed") ?? [])
         menuBar = defaults.object(forKey: "menuBar") as? Bool ?? true
         sound = defaults.object(forKey: "sound") as? Bool ?? true
+        notify = defaults.object(forKey: "notify") as? Bool ?? true
         goalLink = defaults.string(forKey: "goalLink") ?? ""
         goalText = defaults.string(forKey: "goalText") ?? ""
         courseGoal = defaults.dictionary(forKey: "courseGoal") as? [String: Int] ?? [:]
@@ -432,6 +437,13 @@ final class LockEngine: ObservableObject {
         endsAt = mode == .timer || mode == .manual ? Date().addingTimeInterval(Double(minutes) * 60) : .distantFuture
         locked = true
         ticks = 0
+        warnAtFive = switch mode {
+        case .timer: minutes > 5
+        case .video: video.map { ($0.duration - $0.current) / $0.rate > 300 } ?? false
+        default: false
+        }
+        warnCanFinish = mode == .manual
+        if notify { UNUserNotificationCenter.current().requestAuthorization(options: [.alert]) { _, _ in } }
         updateMenuText()
 
         for other in NSWorkspace.shared.runningApplications
@@ -545,7 +557,27 @@ final class LockEngine: ObservableObject {
         unlock()
         status = message
         if sound { NSSound(named: "Glass")?.play() }
-        NSApp.activate()
+        showMainWindow()
+    }
+
+    private func post(_ body: String) {
+        guard notify else { return }
+        let content = UNMutableNotificationContent()
+        content.title = "Lecture Lock"
+        content.body = body
+        UNUserNotificationCenter.current().add(UNNotificationRequest(identifier: UUID().uuidString, content: content, trigger: nil))
+    }
+
+    /// Heads-ups while locked: five minutes left, or manual mode's minimum time is up.
+    private func checkWarnings() {
+        if warnAtFive, lockedMode != .video || video != nil, clockSeconds <= 300 {
+            warnAtFive = false
+            post("5 minutes left.")
+        }
+        if warnCanFinish, canSayDone {
+            warnCanFinish = false
+            post("Minimum time's up. You can finish whenever you're done.")
+        }
     }
 
     /// Manual mode: the "I'm done" button only works once the minimum time has passed.
@@ -577,6 +609,7 @@ final class LockEngine: ObservableObject {
             browserWork(kind, anchor: a, enforceURL: front == target ? lastGoodURL : nil,
                         pollJS: ticks % 2 == 0 ? pollJS() : nil)
         }
+        checkWarnings()
         updateMenuText()
     }
 
@@ -961,6 +994,15 @@ struct ContentView: View {
                             .frame(width: 140)
                         }
                     }
+                    HStack(alignment: .top, spacing: 24) {
+                        setting("NOTIFICATIONS") {
+                            HStack(spacing: 0) {
+                                segment("ON", selected: engine.notify) { engine.notify = true }
+                                segment("OFF", selected: !engine.notify) { engine.notify = false }
+                            }
+                            .frame(width: 140)
+                        }
+                    }
                 }
                 .padding(.top, 4)
                 .transition(.opacity)
@@ -1089,6 +1131,13 @@ struct ContentView: View {
             content()
         }
     }
+}
+
+/// Brings up the main window even if it was closed: reopening ourselves makes SwiftUI recreate it.
+func showMainWindow() {
+    let cfg = NSWorkspace.OpenConfiguration()
+    cfg.activates = true
+    NSWorkspace.shared.openApplication(at: Bundle.main.bundleURL, configuration: cfg)
 }
 
 final class AppDelegate: NSObject, NSApplicationDelegate {
