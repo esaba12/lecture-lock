@@ -11,8 +11,10 @@ enum BrowserKind {
     case chromium(String)   // AppleScript app name
     case safari
 
-    static func of(_ app: NSRunningApplication) -> BrowserKind? {
-        switch app.bundleIdentifier {
+    static func of(_ app: NSRunningApplication) -> BrowserKind? { of(bundleID: app.bundleIdentifier) }
+
+    static func of(bundleID: String?) -> BrowserKind? {
+        switch bundleID {
         case "com.google.Chrome": return .chromium("Google Chrome")
         case "com.brave.Browser": return .chromium("Brave Browser")
         case "com.microsoft.edgemac": return .chromium("Microsoft Edge")
@@ -245,6 +247,41 @@ func course(forURL url: String) -> Course? {
     return courses.first { host == $0.host || host.hasSuffix("." + $0.host) }
 }
 
+// MARK: - Schedules
+
+/// A timer lock that starts by itself, e.g. every Mon/Wed at 10:00 in Chrome for 75 min.
+struct Schedule: Codable, Identifiable, Equatable {
+    var id = UUID()
+    var days: Set<Int>      // Calendar weekdays, 1 = Sunday … 7 = Saturday
+    var hour: Int
+    var minute: Int
+    var appID: String       // bundle id
+    var url = ""            // "" = none
+    var minutes: Int
+}
+
+/// Weekdays in display order, Monday first.
+let weekdayOrder = [2, 3, 4, 5, 6, 7, 1]
+
+/// "2026-10-24" in `calendar`'s time zone: the key a schedule's last fire is stored under.
+func dayKey(_ date: Date, calendar: Calendar = .current) -> String {
+    let c = calendar.dateComponents([.year, .month, .day], from: date)
+    return String(format: "%04d-%02d-%02d", c.year ?? 0, c.month ?? 0, c.day ?? 0)
+}
+
+/// Schedules that should fire at `now`: on one of their days, within 2 minutes of their start,
+/// and not already fired today. Pure, so the 30s check can't double-fire or fire late.
+func dueSchedules(_ schedules: [Schedule], now: Date, lastFired: [String: String], calendar: Calendar = .current) -> [Schedule] {
+    let c = calendar.dateComponents([.weekday, .hour, .minute, .second], from: now)
+    let secs = (c.hour ?? 0) * 3600 + (c.minute ?? 0) * 60 + (c.second ?? 0)
+    let today = dayKey(now, calendar: calendar)
+    return schedules.filter { s in
+        let start = s.hour * 3600 + s.minute * 60
+        return s.days.contains(c.weekday ?? 0) && secs >= start && secs < start + 120
+            && lastFired[s.id.uuidString] != today
+    }
+}
+
 // MARK: - Lock engine
 
 enum LockMode: String, CaseIterable, Identifiable {
@@ -375,6 +412,9 @@ final class LockEngine: ObservableObject {
     @Published var goalText: String { didSet { defaults.set(goalText, forKey: "goalText") } }
     @Published var courseGoal: [String: Int] { didSet { defaults.set(courseGoal, forKey: "courseGoal") } }
     @Published var history: [Session] { didSet { defaults.set(try? JSONEncoder().encode(history), forKey: "history") } }
+    @Published var schedules: [Schedule] { didSet { defaults.set(try? JSONEncoder().encode(schedules), forKey: "schedules") } }
+    private var scheduleLastFired: [String: String] { didSet { defaults.set(scheduleLastFired, forKey: "scheduleLastFired") } }
+    private var scheduleTimer: Timer?
 
     private(set) var target: NSRunningApplication?
     private(set) var lockedMode: LockMode = .timer
@@ -420,6 +460,12 @@ final class LockEngine: ObservableObject {
         goalText = defaults.string(forKey: "goalText") ?? ""
         courseGoal = defaults.dictionary(forKey: "courseGoal") as? [String: Int] ?? [:]
         history = defaults.data(forKey: "history").flatMap { try? JSONDecoder().decode([Session].self, from: $0) } ?? []
+        schedules = defaults.data(forKey: "schedules").flatMap { try? JSONDecoder().decode([Schedule].self, from: $0) } ?? []
+        scheduleLastFired = defaults.dictionary(forKey: "scheduleLastFired") as? [String: String] ?? [:]
+        // Separate from the lock's 1s timer, which only runs while locked.
+        let t = Timer(timeInterval: 30, repeats: true) { [weak self] _ in self?.checkSchedules() }
+        RunLoop.main.add(t, forMode: .common)
+        scheduleTimer = t
     }
 
     func refresh() {
@@ -699,6 +745,62 @@ final class LockEngine: ObservableObject {
         }
         lock(override, minutes: minutes)
         return locked
+    }
+
+    // MARK: Schedules
+
+    private func checkSchedules() {
+        guard !locked, let s = dueSchedules(schedules, now: Date(), lastFired: scheduleLastFired).first else { return }
+        // Recorded before trying, so a failed start doesn't retry every 30s.
+        scheduleLastFired[s.id.uuidString] = dayKey(Date())
+        fire(s)
+    }
+
+    /// Opens the schedule's app (and page), waits for it to come to the front, then locks to it.
+    private func fire(_ s: Schedule) {
+        guard let appURL = NSWorkspace.shared.urlForApplication(withBundleIdentifier: s.appID) else {
+            failSchedule("Scheduled lock: couldn't find \(appName(s.appID)).")
+            return
+        }
+        let cfg = NSWorkspace.OpenConfiguration()
+        cfg.activates = true
+        if !s.url.isEmpty, BrowserKind.of(bundleID: s.appID) != nil,
+           let url = URL(string: s.url.contains("://") ? s.url : "https://" + s.url) {
+            NSWorkspace.shared.open([url], withApplicationAt: appURL, configuration: cfg)
+        } else {
+            NSWorkspace.shared.openApplication(at: appURL, configuration: cfg)
+        }
+        waitForFront(s, triesLeft: 20)
+    }
+
+    private func waitForFront(_ s: Schedule, triesLeft: Int) {
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { [self] in
+            if locked { return }   // locked by hand in the meantime
+            guard let front = NSWorkspace.shared.frontmostApplication, front.bundleIdentifier == s.appID else {
+                if triesLeft > 0 { waitForFront(s, triesLeft: triesLeft - 1) }
+                else { failSchedule("Scheduled lock: \(appName(s.appID)) didn't come to the front.") }
+                return
+            }
+            refresh()
+            targetPID = front.processIdentifier
+            lock(.timer, minutes: s.minutes)
+            if !locked { failSchedule(status) }
+        }
+    }
+
+    /// Shows the window with why a scheduled lock didn't start.
+    private func failSchedule(_ message: String) {
+        status = message
+        showMainWindow()
+    }
+
+    /// Pick one app from disk, for a schedule.
+    func pickApp() -> String? {
+        let panel = NSOpenPanel()
+        panel.allowedContentTypes = [.application]
+        panel.directoryURL = URL(fileURLWithPath: "/Applications")
+        guard panel.runModal() == .OK, let url = panel.url else { return nil }
+        return Bundle(url: url)?.bundleIdentifier
     }
 
     /// One line describing the saved settings, for the menu bar.
@@ -1102,6 +1204,7 @@ struct ContentView: View {
     @ObservedObject var engine = LockEngine.shared
     @State private var phrase = ""
     @State private var showAdvanced = false
+    @State private var draft: Schedule?
 
     var body: some View {
         ZStack(alignment: .topLeading) {
@@ -1119,7 +1222,7 @@ struct ContentView: View {
             }
             .padding(28)
         }
-        .frame(width: 440, height: !engine.locked && showAdvanced ? 860 : 580)
+        .frame(width: 440, height: !engine.locked && showAdvanced ? 880 : 580)
         .onAppear { engine.refresh() }
         .animation(.easeOut(duration: 0.25), value: engine.locked)
     }
@@ -1293,6 +1396,29 @@ struct ContentView: View {
                             .overlay(Rectangle().stroke(Color.paper.opacity(0.25), lineWidth: 1))
                         }
                     }
+                    setting("SCHEDULE") {
+                        VStack(alignment: .leading, spacing: 4) {
+                            ForEach(engine.schedules) { s in
+                                HStack {
+                                    Text(scheduleText(s)).font(mono(12)).foregroundColor(.paper).lineLimit(1)
+                                    Spacer()
+                                    Button { engine.schedules.removeAll { $0.id == s.id } } label: { Text("×").font(mono(14, .bold)) }
+                                        .buttonStyle(.plain).foregroundColor(.dim)
+                                }
+                                .padding(.horizontal, 10).frame(height: 28)
+                                .overlay(Rectangle().stroke(Color.paper.opacity(0.25), lineWidth: 1))
+                            }
+                            Button { draft = newSchedule() } label: {
+                                Text("+ ADD SCHEDULE").font(mono(12, .bold)).foregroundColor(.paper)
+                                    .padding(.horizontal, 10).frame(maxWidth: .infinity, alignment: .leading).frame(height: 28)
+                                    .overlay(Rectangle().stroke(Color.paper.opacity(0.25), lineWidth: 1))
+                                    .contentShape(Rectangle())
+                            }
+                            .buttonStyle(.plain)
+                            hint("Fires while LectureLock is running — turn on Open at login.")
+                        }
+                    }
+                    .sheet(item: $draft) { _ in scheduleSheet }
                     HStack(alignment: .top, spacing: 24) {
                         setting("MENU BAR ICON") {
                             HStack(spacing: 0) {
@@ -1340,6 +1466,88 @@ struct ContentView: View {
                 .padding(.top, 4)
                 .transition(.opacity)
             }
+        }
+    }
+
+    // MARK: Schedule editor
+
+    static let dayNames = ["SUN", "MON", "TUE", "WED", "THU", "FRI", "SAT"]
+
+    /// "MON WED · 10:00 · Chrome · 75 MIN"
+    func scheduleText(_ s: Schedule) -> String {
+        let days = s.days.count == 7 ? "EVERY DAY" : weekdayOrder.filter(s.days.contains).map { Self.dayNames[$0 - 1] }.joined(separator: " ")
+        return "\(days) · \(String(format: "%02d:%02d", s.hour, s.minute)) · \(engine.appName(s.appID)) · \(durationText(s.minutes))"
+    }
+
+    func newSchedule() -> Schedule {
+        let now = Calendar.current.dateComponents([.weekday, .hour], from: Date())
+        let app = engine.targetPID.flatMap(NSRunningApplication.init(processIdentifier:))?.bundleIdentifier ?? ""
+        return Schedule(days: [now.weekday ?? 2], hour: ((now.hour ?? 0) + 1) % 24, minute: 0, appID: app, minutes: engine.minutes)
+    }
+
+    @ViewBuilder var scheduleSheet: some View {
+        if let d = Binding($draft) {
+            VStack(alignment: .leading, spacing: 16) {
+                label("NEW SCHEDULE")
+                setting("DAYS") {
+                    HStack(spacing: 0) {
+                        ForEach(weekdayOrder, id: \.self) { day in
+                            segment(String(Self.dayNames[day - 1].prefix(1)), selected: d.days.wrappedValue.contains(day)) {
+                                if d.days.wrappedValue.contains(day) { d.days.wrappedValue.remove(day) } else { d.days.wrappedValue.insert(day) }
+                            }
+                        }
+                    }
+                }
+                setting("TIME") {
+                    DatePicker("", selection: Binding(
+                        get: { Calendar.current.date(bySettingHour: d.hour.wrappedValue, minute: d.minute.wrappedValue, second: 0, of: Date()) ?? Date() },
+                        set: { t in
+                            let c = Calendar.current.dateComponents([.hour, .minute], from: t)
+                            d.hour.wrappedValue = c.hour ?? 0; d.minute.wrappedValue = c.minute ?? 0
+                        }
+                    ), displayedComponents: .hourAndMinute)
+                    .labelsHidden().fixedSize()
+                }
+                setting("APP") {
+                    Menu {
+                        ForEach(engine.apps.filter { $0.bundleIdentifier != nil }, id: \.processIdentifier) { app in
+                            Button(app.localizedName ?? "?") { d.appID.wrappedValue = app.bundleIdentifier ?? "" }
+                        }
+                        Divider()
+                        Button("Other app…") { if let id = engine.pickApp() { d.appID.wrappedValue = id } }
+                    } label: {
+                        Text(d.appID.wrappedValue.isEmpty ? "PICK AN APP" : engine.appName(d.appID.wrappedValue)).font(mono(12, .bold))
+                    }
+                    .menuStyle(.borderlessButton)
+                    .padding(.horizontal, 10).frame(height: 28)
+                    .overlay(Rectangle().stroke(Color.paper.opacity(0.25), lineWidth: 1))
+                }
+                setting("PAGE (OPTIONAL)") {
+                    field("Page to open, e.g. canvas…", text: d.url)
+                }
+                VStack(alignment: .leading, spacing: 0) {
+                    header("DURATION", durationText(d.minutes.wrappedValue))
+                    DurationSlider(minutes: d.minutes)
+                }
+                HStack(spacing: 8) {
+                    segment("CANCEL", selected: false) { draft = nil }
+                    Button {
+                        engine.schedules.append(d.wrappedValue)
+                        draft = nil
+                    } label: {
+                        Text("SAVE").font(mono(12, .heavy)).tracking(2)
+                            .frame(maxWidth: .infinity).frame(height: 32)
+                            .foregroundColor(.ink).background(Color.signal)
+                    }
+                    .buttonStyle(.plain)
+                    .disabled(d.days.wrappedValue.isEmpty || d.appID.wrappedValue.isEmpty)
+                    .opacity(d.days.wrappedValue.isEmpty || d.appID.wrappedValue.isEmpty ? 0.4 : 1)
+                }
+            }
+            .padding(28)
+            .frame(width: 400)
+            .background(Color.ink)
+            .environment(\.colorScheme, .dark)
         }
     }
 

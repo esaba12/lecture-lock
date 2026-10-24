@@ -16,6 +16,7 @@ A tiny macOS app: click **LOCK IN** and your Mac is locked to the lecture you're
     - **I say I'm done** — an *I'm done* button appears after a minimum time.
   - **Stay on** — this page or the whole site (link/course/text modes always use the whole site, so you can move between pages).
   - **Also allow** — let a notes app (Notes, Notion, GoodNotes…) through alongside the lecture. Finder is always allowed.
+  - **Schedule** — timer locks that start by themselves, e.g. Mon/Wed at 10:00 in Chrome on your Canvas page for 75 min. LectureLock opens the app (and page), then locks to it. Only fires while LectureLock is running, and not if you're already locked.
 - Video, link, course and text modes read the page with a little JavaScript. One-time setup: Chrome/Brave › View › Developer › *Allow JavaScript from Apple Events* (Safari: Develop › same option).
 - **Menu bar icon** — 🔓 sits in the menu bar; click it to lock to whatever app you're using (saved settings, or a quick 30/60/90-min timer). While locked it shows the time left or lessons done. Can be turned off under Advanced.
 - **Hotkey** — ⌃⌥L locks in from anywhere with your saved settings, to whatever app you're using.
