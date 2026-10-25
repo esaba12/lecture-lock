@@ -43,6 +43,8 @@ Requires the Xcode command line tools (`xcode-select --install`).
 open LectureLock.app
 ```
 
+`./test.sh` runs the logic tests (break rounds, schedules, streaks) without locking anything. GitHub runs both on every PR.
+
 The first time you lock a browser tab, macOS asks to let LectureLock control the browser — click **Allow** (or enable it in System Settings › Privacy & Security › Automation).
 
 ## Limits

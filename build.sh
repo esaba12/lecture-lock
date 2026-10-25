@@ -19,7 +19,7 @@ cat > $APP/Contents/Info.plist <<PLIST
   <key>CFBundleIdentifier</key><string>com.ethansaba.lecturelock</string>
   <key>CFBundleExecutable</key><string>LectureLock</string>
   <key>CFBundlePackageType</key><string>APPL</string>
-  <key>CFBundleShortVersionString</key><string>1.0</string>
+  <key>CFBundleShortVersionString</key><string>1.2</string>
   <key>LSMinimumSystemVersion</key><string>14.0</string>
   <key>NSAppleEventsUsageDescription</key><string>LectureLock keeps your browser on the lecture tab.</string>
 </dict></plist>
