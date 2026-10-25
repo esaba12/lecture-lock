@@ -2,11 +2,13 @@
 
 Things the code can't check by itself, because they mean actually locking the Mac. Build with `./build.sh`, run `LectureLock.app`, and keep the emergency phrase handy: `i am choosing to stop learning`.
 
-Status: **not yet run** for the October 2026 round (PRs #1–#13). Tick them off here as you go.
+Status: partly run for the October 2026 round (PRs #1–#13). Ticked items passed a scripted run on 2026-10-25 (locks started by a schedule, Force Quit done with `kill -9`, results read from the saved settings). The rest need someone at the keyboard. Tick them off here as you go.
 
 ## Lock basics
 - [ ] Duration slider keeps its value after quitting and reopening. (#1)
-- [ ] Browser lock: switching tabs snaps back; closing the lecture tab reopens it. (#2, #3)
+- [x] Browser lock: opening another tab snaps back. (#2, #3)
+- [ ] Closing the lecture tab reopens it.
+- [ ] With a second Chrome window on another display, clicking into it brings the lecture window back.
 - [ ] Freeze the browser (e.g. a page stuck in `while(true){}` in another tab) while locked: LectureLock's countdown and exit field keep working. (#3)
 
 ## Notifications and window (#4)
@@ -20,16 +22,18 @@ Status: **not yet run** for the October 2026 round (PRs #1–#13). Tick them off
 - [ ] Log out and back in: LectureLock is in the menu bar.
 
 ## Force Quit and restarts (#6)
-- [ ] Lock, then Force Quit LectureLock (⌥⌘⎋): it comes back within ~10 s, still locked, with the same time left.
-- [ ] Same with a browser lock: it reopens on the lecture tab.
-- [ ] Finish a lock normally, then Force Quit: it does **not** come back (`pgrep -fl "LectureLock --watchdog"` shows nothing).
+- [x] Lock, then Force Quit LectureLock (⌥⌘⎋): it comes back within ~10 s, still locked, with the same time left. *(came back in 1 s)*
+- [x] Same with a browser lock: it reopens on the lecture tab.
+- [x] Finish a lock normally, then Force Quit: it does **not** come back (`pgrep -fl "LectureLock --watchdog"` shows nothing).
 - [ ] With Open at login on: lock, restart the Mac, and the lock is restored after login.
 
 ## Emergency exit (#7)
 - [ ] Pasting the phrase into the exit field does nothing; typing it works.
-- [ ] Hard mode (AFTER 15 MIN): the field is replaced by a countdown for 15 minutes, and it survives a Force Quit.
+- [x] Hard mode survives a Force Quit (still on in the saved lock).
+- [ ] Hard mode (AFTER 15 MIN): the field is replaced by a countdown for 15 minutes.
 
 ## History (#8)
+- [x] A finished lock is saved to history.
 - [ ] After a finished lock (≥1 min) the stats line appears under the headline; an emergency exit adds "1 EXIT".
 - [ ] The menu bar shows "Today: … · N-day streak".
 
@@ -43,8 +47,9 @@ Status: **not yet run** for the October 2026 round (PRs #1–#13). Tick them off
 - [ ] Quick timers from the menu bar ignore the break setting.
 
 ## Schedules (#11)
-- [ ] Add a schedule for a minute from now in a browser with a page: at that time the browser opens the page and locks.
-- [ ] A schedule for an app that doesn't exist shows the window with the reason, and doesn't retry until the next day.
+- [x] Add a schedule for a minute from now in a browser with a page: at that time the browser opens the page and locks.
+- [x] A schedule for an app that doesn't exist doesn't retry until the next day.
+- [ ] …and shows the window with the reason.
 
 ## Layout (#13)
 - [ ] With Advanced open on a 13–14" screen the window fits, the settings scroll, and LOCK IN stays visible.
