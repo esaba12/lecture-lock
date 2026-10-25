@@ -142,7 +142,9 @@ enum Watchdog {
     }
 }
 
+#if !TESTING
 @main
+#endif
 enum Main {
     static func main() {
         if CommandLine.arguments.contains("--watchdog") { Watchdog.run() } else { LectureLockApp.main() }
