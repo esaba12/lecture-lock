@@ -447,7 +447,10 @@ struct ContentView: View {
             Spacer()
             TimelineView(.periodic(from: .now, by: 1)) { _ in
                 if engine.exitOpensIn > 0 {
-                    label("EMERGENCY EXIT OPENS IN \(clock(engine.exitOpensIn))")
+                    // A timer lock shorter than the hard-mode delay ends before the exit would open.
+                    label(engine.lockedMode == .timer && engine.exitOpensIn >= Int(engine.endsAt.timeIntervalSinceNow)
+                          ? "EMERGENCY EXIT CLOSED UNTIL THE END"
+                          : "EMERGENCY EXIT OPENS IN \(clock(engine.exitOpensIn))")
                 } else {
                     emergencyExit
                 }
