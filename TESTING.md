@@ -7,8 +7,8 @@ Status: partly run for the October 2026 round (PRs #1–#13). Ticked items passe
 ## Lock basics
 - [ ] Duration slider keeps its value after quitting and reopening. (#1)
 - [x] Browser lock: opening another tab snaps back. (#2, #3)
-- [ ] Closing the lecture tab reopens it.
-- [ ] With a second Chrome window on another display, clicking into it brings the lecture window back.
+- [x] Closing the lecture tab reopens it.
+- [x] A second Chrome window brought to the front is pushed back behind the lecture window within a second.
 - [ ] Freeze the browser (e.g. a page stuck in `while(true){}` in another tab) while locked: LectureLock's countdown and exit field keep working. (#3)
 
 ## Notifications and window (#4)
@@ -30,16 +30,19 @@ Status: partly run for the October 2026 round (PRs #1–#13). Ticked items passe
 ## Emergency exit (#7)
 - [ ] Pasting the phrase into the exit field does nothing; typing it works.
 - [x] Hard mode survives a Force Quit (still on in the saved lock).
-- [ ] Hard mode (AFTER 15 MIN): the field is replaced by a countdown for 15 minutes.
+- [x] Hard mode (AFTER 15 MIN): the field is replaced by a countdown for 15 minutes.
+- [ ] A hard-mode timer lock shorter than 15 min says "EMERGENCY EXIT CLOSED UNTIL THE END".
 
 ## History (#8)
 - [x] A finished lock is saved to history.
-- [ ] After a finished lock (≥1 min) the stats line appears under the headline; an emergency exit adds "1 EXIT".
+- [x] After a finished lock (≥1 min) the stats line appears under the headline.
+- [ ] An emergency exit adds "1 EXIT".
 - [ ] The menu bar shows "Today: … · N-day streak".
 
 ## Hotkey (#9)
 - [ ] ⌃⌥L in a browser tab locks in with the saved settings.
-- [ ] ⌃⌥L where it can't lock (e.g. video mode with no video) plays the error sound and shows the window with the reason.
+- [x] ⌃⌥L where it can't lock (e.g. video mode with no video) shows the window with the reason.
+- [ ] …and plays the error sound.
 
 ## Breaks (#10)
 - [ ] 25 + 5 with a 30-min total: work 25 → chime, apps free, menu bar ☕ → session ends at 25 (no trailing break).
@@ -49,7 +52,7 @@ Status: partly run for the October 2026 round (PRs #1–#13). Ticked items passe
 ## Schedules (#11)
 - [x] Add a schedule for a minute from now in a browser with a page: at that time the browser opens the page and locks.
 - [x] A schedule for an app that doesn't exist doesn't retry until the next day.
-- [ ] …and shows the window with the reason.
+- [x] …and shows the window with the reason.
 
 ## Layout (#13)
 - [ ] With Advanced open on a 13–14" screen the window fits, the settings scroll, and LOCK IN stays visible.
