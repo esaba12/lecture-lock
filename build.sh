@@ -26,3 +26,21 @@ cat > $APP/Contents/Info.plist <<PLIST
 PLIST
 codesign --force -s - $APP
 echo "Built $PWD/$APP"
+
+# ./build.sh --install: replace /Applications/LectureLock.app with this build and relaunch it.
+if [[ "$1" == --install ]]; then
+  if defaults read com.ethansaba.lecturelock activeLock &>/dev/null; then
+    echo "A lock is running. Install again once it's over." >&2
+    exit 1
+  fi
+  osascript -e 'tell application id "com.ethansaba.lecturelock" to quit' 2>/dev/null || true
+  for i in {1..20}; do pgrep -xq LectureLock || break; sleep 0.5; done
+  if pgrep -xq LectureLock; then
+    echo "LectureLock didn't quit. Quit it from the menu bar and try again." >&2
+    exit 1
+  fi
+  rm -rf /Applications/$APP
+  cp -R $APP /Applications/
+  open /Applications/$APP
+  echo "Installed /Applications/$APP"
+fi
