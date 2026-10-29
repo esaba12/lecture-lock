@@ -43,6 +43,8 @@ Requires the Xcode command line tools (`xcode-select --install`).
 open LectureLock.app
 ```
 
+`./build.sh --install` puts the build in Applications instead (quitting and relaunching LectureLock if it's open). It won't run during a lock.
+
 `./test.sh` runs the logic tests (break rounds, schedules, streaks) without locking anything. GitHub runs both on every PR.
 
 The first time you lock a browser tab, macOS asks to let LectureLock control the browser — click **Allow** (or enable it in System Settings › Privacy & Security › Automation).
