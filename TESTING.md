@@ -56,3 +56,16 @@ Status: partly run for the October 2026 round (PRs #1–#13). Ticked items passe
 
 ## Layout (#13)
 - [ ] With Advanced open on a 13–14" screen the window fits, the settings scroll, and LOCK IN stays visible.
+
+## LeetCode and allowed websites
+- [ ] Select LeetCode mode with a non-problem page: lock is refused.
+- [ ] Lock on a signed-in problem with an old Accepted submission: stays locked.
+- [ ] Run Code successfully or submit Wrong Answer: stays locked. Submit Accepted: unlocks within about 15 seconds.
+- [ ] Solve a different problem: original goal stays locked.
+- [ ] Add SoundCloud, Claude, and LeetCode using the shortcut. Switch between these tabs, including a second browser window: no bounce. Unlisted sites bounce back.
+- [ ] Use Claude desktop after adding it under Also allow.
+- [ ] While SoundCloud is frontmost, the original problem's accepted submission still unlocks.
+- [ ] Sign out / go offline / disable JavaScript from Apple Events: stays locked with a useful status.
+- [ ] Force Quit and restore: same problem, start time, and website exceptions persist.
+- [ ] Close the problem tab, then open a blocked tab: the original problem reopens, not SoundCloud.
+- [ ] Repeat browser checks in Chrome and Safari. No live signed-in checks were performed by the automated suite.

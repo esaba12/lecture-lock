@@ -67,6 +67,8 @@ struct Bar: View {
 struct ContentView: View {
     @ObservedObject var engine = LockEngine.shared
     @State private var phrase = ""
+    @State private var website = ""
+    @State private var websiteError = false
     @State private var showAdvanced = false
     @State private var draft: Schedule?
 
@@ -207,6 +209,10 @@ struct ContentView: View {
                 hint("Open a supported course in your browser, then press ↻. Supported: \(courses.map(\.name).joined(separator: ", ")).")
             }
 
+        case .leetcode:
+            header("02 — UNTIL", "LEETCODE ACCEPTED")
+            hint("Open a problem on leetcode.com in the selected browser. Submit an accepted solution after locking in; old submissions and Run Code don't count. Stay signed in and keep the problem tab open.")
+
         case .text:
             header("02 — UNTIL THE PAGE SAYS", "")
             field("e.g. Accepted, Submitted, Congratulations", text: $engine.goalText)
@@ -269,6 +275,30 @@ struct ContentView: View {
                             .menuStyle(.borderlessButton)
                             .padding(.horizontal, 10).frame(height: 28)
                             .overlay(Rectangle().stroke(Color.paper.opacity(0.25), lineWidth: 1))
+                        }
+                    }
+                    setting("ALLOWED WEBSITES") {
+                        VStack(alignment: .leading, spacing: 4) {
+                            ForEach(engine.websites.sorted(), id: \.self) { host in
+                                HStack {
+                                    Text(host).font(mono(12)).foregroundColor(.paper)
+                                    Spacer()
+                                    Button("×") { engine.websites.remove(host) }.buttonStyle(.plain)
+                                }
+                            }
+                            HStack {
+                                field("e.g. soundcloud.com", text: $website)
+                                Button("ADD") {
+                                    if let host = websiteHost(website) {
+                                        engine.websites.insert(host); website = ""; websiteError = false
+                                    } else { websiteError = true }
+                                }
+                            }
+                            if websiteError { hint("Enter a website domain or an http/https URL.") }
+                            Button("+ SOUNDCLOUD, CLAUDE & LEETCODE") {
+                                engine.websites.formUnion(["soundcloud.com", "claude.ai", "leetcode.com"])
+                            }.font(mono(10, .bold))
+                            hint("Allowed in the locked browser, including subdomains. Add the Claude desktop app under Also allow → Add app. Other browsers still follow app permissions.")
                         }
                     }
                     setting("SCHEDULE") {
@@ -523,6 +553,10 @@ struct ContentView: View {
             if engine.typedLinkWarning {
                 Text("Typed links don't count. Click your way there.").font(mono(10)).foregroundColor(.signal).padding(.top, 6)
             }
+        case .leetcode:
+            label("UNTIL LEETCODE ACCEPTS")
+            Text(engine.lockedProblem ?? "Your problem").font(mono(11)).foregroundColor(.paper)
+            hint(engine.status.isEmpty ? "Waiting for a new accepted submission. Keep the problem tab open." : engine.status)
         case .text:
             label("LOCKED IN · UNTIL THE PAGE SAYS")
             Text("\"\(engine.goalText)\"").font(mono(11)).foregroundColor(.paper).lineLimit(2)

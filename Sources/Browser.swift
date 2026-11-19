@@ -126,7 +126,9 @@ func tabSearchScript(_ kind: BrowserKind, anchor: String, before: String = "", o
 /// Make sure a tab matching `anchor` is the one in front; reopen `url` if none is left.
 /// Returns the front tab's URL when it matches.
 @discardableResult
-func enforceTab(_ kind: BrowserKind, url: String, anchor: String) -> String? {
+func enforceTab(_ kind: BrowserKind, url: String, anchor: String, websites: Set<String> = []) -> String? {
+    // An exception must not replace the lecture URL saved for restoring a closed tab.
+    if !websites.isEmpty, let tab = currentTab(kind), websiteAllowed(tab.url, hosts: websites) { return nil }
     let u = esc(url)
     let (noWindows, select, reopen) = switch kind {
     case .chromium:

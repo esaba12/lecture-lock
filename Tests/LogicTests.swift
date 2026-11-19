@@ -1,4 +1,5 @@
 import Foundation
+import JavaScriptCore
 
 // Checks for the pure functions: break rounds, schedule firing, streaks and formatting.
 // Run with ./test.sh. Nothing here touches the lock, so it never locks the Mac.
@@ -92,6 +93,8 @@ func historyTests() {
 @main
 enum LogicTests {
     static func main() {
+        leetCodeProbeTests()
+        websiteAndLeetCodeTests()
         breakTests()
         scheduleTests()
         historyTests()
@@ -101,4 +104,57 @@ enum LogicTests {
         }
         print("All logic tests passed")
     }
+}
+
+func websiteAndLeetCodeTests() {
+    check(websiteHost(" HTTPS://WWW.SoundCloud.com/you/likes "), "soundcloud.com", "normalize website")
+    check(websiteHost("javascript:alert(1)"), nil, "reject invalid scheme")
+    check(websiteHost("https://soundcloud.com@evil.com"), nil, "reject credentials")
+    let hosts: Set<String> = ["soundcloud.com", "claude.ai", "leetcode.com"]
+    check(websiteAllowed("https://m.soundcloud.com/song", hosts: hosts), true, "allow subdomain")
+    check(websiteAllowed("https://soundcloud.com.evil.com", hosts: hosts), false, "reject suffix spoof")
+    check(websiteAllowed("https://evil.com/?next=soundcloud.com", hosts: hosts), false, "reject query spoof")
+    check(websiteAllowed("https://notsoundcloud.com", hosts: hosts), false, "require host boundary")
+    check(websiteAllowed("file:///soundcloud.com", hosts: hosts), false, "reject local file")
+    check(leetCodeProblem("https://leetcode.com/problems/two-sum/description/"), "two-sum", "problem slug")
+    check(leetCodeProblem("https://leetcode.com/problems/two-sum"), "two-sum", "slug without slash")
+    check(leetCodeProblem("https://leetcode.com.evil.com/problems/two-sum/"), nil, "real LeetCode host required")
+    check(leetCodeProblem("https://leetcode.com/problemset/"), nil, "problem required")
+    let start = Date(timeIntervalSince1970: 1000)
+    check(leetCodeAccepted(#"[{"status_display":"Accepted","timestamp":"1001"}]"#, since: start), true, "new accepted submission")
+    check(leetCodeAccepted(#"[{"status_display":"Accepted","timestamp":"999"}]"#, since: start), false, "old accepted submission")
+    check(leetCodeAccepted(#"[{"status_display":"Accepted","timestamp":"1000"}]"#, since: start), false, "same-second submission rejected")
+    check(leetCodeAccepted(#"[{"status_display":"Wrong Answer","timestamp":"1001"}]"#, since: start), false, "failed submission")
+    check(leetCodeAccepted("error", since: start), false, "network failure stays locked")
+    check(leetCodeAccepted("pending", since: start), false, "pending stays locked")
+    check(leetCodeAccepted("[]", since: start), false, "empty history stays locked")
+}
+
+/// Exercise the actual browser script with a fake page and submission endpoint.
+func leetCodeProbeTests() {
+    let context = JSContext()!
+    context.evaluateScript("""
+        var window = {}, location = {hostname:'leetcode.com'};
+        var AbortSignal = {timeout:function(){return {}}};
+        var requests = 0, requestedURL = '', credentials = '';
+        var fetch = function(url, options) {
+            requests++; requestedURL=url; credentials=options.credentials;
+            return Promise.resolve({ok:true,json:function(){return Promise.resolve({
+                submissions_dump:[{status_display:'Accepted',timestamp:'1001'}]
+            })}});
+        };
+        """)
+    let js = leetCodeJS(problem: "two-sum")
+    check(context.evaluateScript(js)?.toString(), "pending", "async probe starts pending")
+    let result = context.evaluateScript(js)?.toString() ?? ""
+    check(leetCodeAccepted(result, since: Date(timeIntervalSince1970: 1000)), true, "collect async accepted result")
+    check(context.evaluateScript("requestedURL")?.toString(), "/api/submissions/two-sum/?offset=0&limit=20", "problem-specific endpoint")
+    check(context.evaluateScript("credentials")?.toString(), "same-origin", "signed-in request")
+    check(context.evaluateScript("requests")?.toInt32(), 1, "throttle repeated polls")
+    context.evaluateScript("window={};fetch=function(){return Promise.reject(Error('offline'))}")
+    _ = context.evaluateScript(js)
+    check(context.evaluateScript(js)?.toString(), "error", "failed request reports error")
+    context.evaluateScript("location.hostname='evil.com'")
+    check(context.evaluateScript(js)?.toString(), "error", "no probe on other origins")
+    check(context.exception?.toString(), nil, "browser script runs without JavaScript errors")
 }

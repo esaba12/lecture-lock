@@ -7,7 +7,7 @@ import ServiceManagement
 // MARK: - Lock engine
 
 enum LockMode: String, CaseIterable, Identifiable {
-    case timer, video, link, course, text, manual
+    case timer, video, link, course, text, leetcode, manual
     var id: String { rawValue }
 
     var title: String {
@@ -17,6 +17,7 @@ enum LockMode: String, CaseIterable, Identifiable {
         case .link: "I reach a link"
         case .course: "I finish a course"
         case .text: "Page shows text"
+        case .leetcode: "I solve a LeetCode problem"
         case .manual: "I say I'm done"
         }
     }
@@ -89,6 +90,8 @@ struct LockSnapshot: Codable {
     var breaks: String?
     var phaseOrigin: Date?
     var sessionTotal: Double?
+    var websites: [String]?
+    var leetCodeProblem: String?
 
     /// A timer that ran out while LectureLock wasn't running.
     var isOver: Bool { mode == LockMode.timer.rawValue && Date() >= endsAt }
@@ -124,6 +127,9 @@ final class LockEngine: ObservableObject {
     @Published var mode: LockMode { didSet { defaults.set(mode.rawValue, forKey: "mode") } }
     @Published var scope: LockScope { didSet { defaults.set(scope.rawValue, forKey: "scope") } }
     @Published var allowed: Set<String> { didSet { defaults.set(Array(allowed), forKey: "allowed") } }
+    @Published var websites: Set<String> { didSet { defaults.set(Array(websites), forKey: "websites") } }
+    @Published private(set) var lockedProblem: String?
+    private var lockedWebsites: Set<String> = []
     @Published var menuBar: Bool { didSet { defaults.set(menuBar, forKey: "menuBar") } }
     @Published var sound: Bool { didSet { defaults.set(sound, forKey: "sound") } }
     @Published var notify: Bool { didSet { defaults.set(notify, forKey: "notify") } }
@@ -173,6 +179,7 @@ final class LockEngine: ObservableObject {
         mode = LockMode(rawValue: defaults.string(forKey: "mode") ?? "") ?? .timer
         scope = LockScope(rawValue: defaults.string(forKey: "scope") ?? "") ?? .page
         allowed = Set(defaults.stringArray(forKey: "allowed") ?? [])
+        websites = Set(defaults.stringArray(forKey: "websites") ?? [])
         menuBar = defaults.object(forKey: "menuBar") as? Bool ?? true
         sound = defaults.object(forKey: "sound") as? Bool ?? true
         notify = defaults.object(forKey: "notify") as? Bool ?? true
@@ -261,6 +268,7 @@ final class LockEngine: ObservableObject {
         let kind = BrowserKind.of(app)
         session += 1
         lastGoodURL = nil; lockedAnchor = nil; tabTitle = nil
+        lockedProblem = nil
         video = nil; maxWatched = 0; lockedCourse = nil; completed = []; typedLinkWarning = false
 
         if mode.needsBrowser && kind == nil {
@@ -282,6 +290,7 @@ final class LockEngine: ObservableObject {
             return
         }
 
+        lockedWebsites = websites
         target = app
         lockedMode = mode
         lockedHardMode = hardMode
@@ -342,7 +351,8 @@ final class LockEngine: ObservableObject {
             goalLink: goalLink, goalText: goalText, course: lockedCourse?.name,
             courseStart: courseRange.lowerBound, courseEnd: courseRange.upperBound,
             completed: completed.sorted(), maxWatched: maxWatched, hardMode: lockedHardMode,
-            breaks: lockedPlan.rawValue, phaseOrigin: phaseOrigin, sessionTotal: sessionTotal)
+            breaks: lockedPlan.rawValue, phaseOrigin: phaseOrigin, sessionTotal: sessionTotal,
+            websites: lockedWebsites.sorted(), leetCodeProblem: lockedProblem)
         guard let data = try? JSONEncoder().encode(snap), data != lastSnapshot else { return }
         lastSnapshot = data
         defaults.set(data, forKey: LockSnapshot.key)
@@ -359,6 +369,8 @@ final class LockEngine: ObservableObject {
         guard let s = try? JSONDecoder().decode(LockSnapshot.self, from: data),
               let mode = LockMode(rawValue: s.mode), !s.isOver else { clearSnapshot(); return }
         lockedMode = mode; lockedAnchor = s.anchor; lastGoodURL = s.lastGoodURL; tabTitle = s.tabTitle
+        lockedWebsites = Set(s.websites ?? [])
+        lockedProblem = s.leetCodeProblem
         lockedAt = s.lockedAt; endsAt = s.endsAt
         goalLink = s.goalLink; goalText = s.goalText
         lockedCourse = courses.first { $0.name == s.course }
@@ -410,6 +422,16 @@ final class LockEngine: ObservableObject {
         }
         switch mode {
         case .timer, .manual:
+            return nil
+
+        case .leetcode:
+            guard let problem = leetCodeProblem(tabURL) else {
+                return "Open the LeetCode problem you want to solve, then lock in."
+            }
+            lockedProblem = problem
+            lockedAnchor = "leetcode.com/problems/" + problem + "/"
+            lastGoodURL = "https://leetcode.com/problems/" + problem + "/"
+            if case .failure(let e) = js(leetCodeJS(problem: problem)) { return e.message }
             return nil
 
         case .video:
@@ -533,6 +555,7 @@ final class LockEngine: ObservableObject {
         case .video: "until the video ends"
         case .link: "until I reach \(normalizeLink(goalLink).isEmpty ? "a link" : normalizeLink(goalLink))"
         case .course: "until the course is done"
+        case .leetcode: "until my LeetCode problem is accepted"
         case .text: "until the page says \"\(goalText)\""
         }
     }
@@ -658,6 +681,7 @@ final class LockEngine: ObservableObject {
     /// The page check for the current mode, if it has one.
     private func pollJS() -> String? {
         switch lockedMode {
+        case .leetcode: lockedProblem.map { leetCodeJS(problem: $0) }
         case .video: probeVideoJS
         case .link: locationJS
         case .course: lockedCourse?.doneJS
@@ -670,12 +694,17 @@ final class LockEngine: ObservableObject {
     private func browserWork(_ kind: BrowserKind, anchor: String, enforceURL: String?, pollJS: String?) {
         guard enforceURL != nil || pollJS != nil else { return }
         let token = session, mode = lockedMode
+        let websites = lockedWebsites
         scriptBusy = true
         scriptQueue.async { [weak self] in
-            let cur = enforceURL.flatMap { enforceTab(kind, url: $0, anchor: anchor) }
+            let cur = enforceURL.flatMap { enforceTab(kind, url: $0, anchor: anchor, websites: websites) }
             var result: String?
-            if let pollJS, case .value(let s) = runInLectureTab(kind, anchor: anchor, js: pollJS), s != "notab" {
-                result = s
+            if let pollJS {
+                switch runInLectureTab(kind, anchor: anchor, js: pollJS) {
+                case .value(let s): result = s == "notab" ? nil : s
+                case .jsDisabled: result = mode == .leetcode ? "jsDisabled" : nil
+                case .failed: result = mode == .leetcode ? "error" : nil
+                }
             }
             DispatchQueue.main.async {
                 guard let self else { return }
@@ -688,6 +717,14 @@ final class LockEngine: ObservableObject {
                     case .link: self.pollLink(result)
                     case .course: self.pollCourse(result)
                     case .text: self.pollText(result)
+                    case .leetcode:
+                        if leetCodeAccepted(result, since: self.lockedAt) {
+                            self.finish("LeetCode accepted. Nice work.")
+                        } else {
+                            self.status = result == "jsDisabled" ? enableJSHint(kind) : result == "error"
+                                ? "Can't check submissions. Sign in to LeetCode and keep the problem tab open; retrying…"
+                                : "Waiting for a new Accepted submission for \(self.lockedProblem ?? "your problem")."
+                        }
                     case .timer, .manual: break
                     }
                 }
@@ -773,7 +810,7 @@ final class LockEngine: ObservableObject {
         case .video:
             guard let v = video else { return 0 }
             return max(0, Int((v.duration - maxWatched) / v.rate))
-        case .link, .course, .text: return Int(Date().timeIntervalSince(lockedAt))
+        case .link, .course, .text, .leetcode: return Int(Date().timeIntervalSince(lockedAt))
         }
     }
 
